@@ -1,0 +1,25 @@
+<div class="row">
+  <ul class="bouquet list-group text-center">
+    <li class="col-xs-6 col-md-4 col-sm-4 col-lg-4 list-group-item"
+        ng-repeat="product in $ctrl.bouquets | startFrom:$ctrl.currentPage*$ctrl.pageSize | limitTo:$ctrl.pageSize">
+      <figure>
+        <figcaption>
+          <h3>{{product.name}}</h3>
+          <h4>{{product.pricings[0].amount | currency : '£'}}</h4>
+        </figcaption>
+        <img ng-src="{{product.default_bouquet.image_urls.website_main || $ctrl.defaultProductImage}}"/>
+      </figure>
+
+      <input class="margin-top-10 btn btn-success" type="button"
+             ng-click="$ctrl.onClick(product.id, product.pricings[0].amount)"
+             value="Send {{product.name}} | {{product.pricings[0].amount | currency : '£'}}"/>
+    </li>
+  </ul>
+</div>
+<pagination current-page="$ctrl.currentPage" page-size="$ctrl.pageSize"
+            bouquets-length="$ctrl.bouquets.length"></pagination>
+
+
+
+
+

@@ -1,0 +1,42 @@
+<div class="checkout form-group">
+  <bouquet bouquets="$ctrl.bouquets" add-to-basket="$ctrl.addToBasket(id, price)"></bouquet>
+  <hr class="line-break">
+  <div class="row">
+    <div class="col-xs-6 col-sm-6 col-md-6 col-lg-6">
+      <span class="date-picker-label pull-right">Select delivery date</span>
+    </div>
+    <div class="col-xs-6 col-sm-6 col-md-4 col-lg-4">
+      <md-datepicker class="pull-left" ng-model="$ctrl.selectedDeliveryDate" placeholder="Select delivery date"
+                     md-min-date="$ctrl.datePickerConfig.minDate" md-max-date="$ctrl.datePickerConfig.maxDate"
+                     ng-change="$ctrl.setDeliveryDate()"
+                     md-open-on-focus></md-datepicker>
+    </div>
+  </div>
+  <div class="row">
+    <div class="col-xs-6 col-sm-6 col-md-6 col-lg-6 ">
+      <p class="shipping-label pull-right">Select shipping method</p>
+    </div>
+    <div class="col-xs-6 col-sm-6 col-md-4 col-lg-3">
+      <select class="form-control" ng-model="$ctrl.selectedShipping"
+              aria-label="Select shipping method"
+              ng-change="$ctrl.addShippingCostToBasket(ship[$index])"
+              ng-options="ship.name for ship in $ctrl.shippingOptions">
+        <option ng-selected="true" value="">Select a shipping method</option>
+      </select>
+    </div>
+  </div>
+  <div class="row">
+    <div class="col-xs-12 col-lg-12 col-md-12">
+      <p ng-if="$ctrl.cart.totalPrice > 0">Total Price</p>
+      <p class="total-price" ng-if="$ctrl.cart.totalPrice > 0">{{$ctrl.cart.totalPrice | currency : '£'}}</p>
+    </div>
+  </div>
+  <div class="row">
+    <div class="col-xs-12 col-lg-12 col-md-12">
+      <button class="btn btn-info" ng-disabled="true">
+        Continue to your details
+      </button>
+    </div>
+  </div>
+</div>
+

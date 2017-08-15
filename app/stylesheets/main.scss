@@ -1,0 +1,21 @@
+/* Global style */
+@import './index';
+
+.margin-top-10 {
+  margin-top: 10px;
+}
+
+body {
+  background-color: $body-bg;
+}
+
+footer {
+  padding: 10px 10px;
+  margin: 10px 10px;
+  font-family: $font-main;
+  text-align: center;
+  line-height: 20px;
+}
+
+
+

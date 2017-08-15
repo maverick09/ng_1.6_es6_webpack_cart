@@ -1,0 +1,11 @@
+@import './../../../stylesheets/index';
+
+.pagination-row {
+  background-color: $pagination-row-bg;
+  line-height: 15px;
+
+  .page-info {
+    font-family: $font-main;
+    font-size: $font-normal-size;
+  }
+}

@@ -1,0 +1,50 @@
+@import './../../../stylesheets/index';
+
+.bouquet {
+  .btn-success {
+    color: $button-font-color;
+    background-color: $button-bg-color;
+    border-color: $button-bg-color;
+
+    &:focus {
+      outline: 0;
+      color: $button-font-hover-color;
+      background-color: $button-bg-hover-color;
+      border-color: $button-bg-hover-color;
+    }
+
+    &:hover {
+      color: $button-font-hover-color;
+      background-color: $button-bg-hover-color;
+      border-color: $button-bg-hover-color;
+    }
+  }
+
+  .list-group-item {
+    border: 0;
+  }
+
+  li img {
+    width: 100%;
+  }
+
+  li:hover {
+    -moz-border-radius-topleft: $default-radius;
+    -moz-border-radius-topright: $rounded-radius;
+    -moz-border-radius-bottomright: $rounded-radius;
+    -moz-border-radius-bottomleft: $default-radius;
+    -webkit-border-radius: $default-radius $rounded-radius;
+    border-radius: $default-radius $rounded-radius;
+    background-color: $tile-hover-color;
+  }
+
+  li:nth-child(odd):hover {
+    -moz-border-radius-topleft: $rounded-radius;
+    -moz-border-radius-topright: $default-radius;
+    -moz-border-radius-bottomright: $default-radius;
+    -moz-border-radius-bottomleft: $rounded-radius;
+    -webkit-border-radius: $rounded-radius $default-radius;
+    border-radius: $rounded-radius $default-radius;
+    background-color: $tile-hover-color;
+  }
+}
