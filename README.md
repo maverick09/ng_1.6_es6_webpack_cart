@@ -1,4 +1,4 @@
-# AngularJs v1.6 application for 'Bloom & Wild frontend test'
+# AngularJs v1.6 application
 
 
 ## Libraries
