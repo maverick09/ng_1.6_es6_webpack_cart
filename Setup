@@ -1,0 +1,47 @@
+import { beforeAll, afterEach, afterAll, vi } from 'vitest'
+import { setupServer } from 'msw/node'
+import { rest } from 'msw'
+
+// Setup MSW server for testing
+const server = setupServer()
+
+// Setup MSW
+beforeAll(() => {
+  server.listen({ onUnhandledRequest: 'warn' })
+})
+
+afterEach(() => {
+  server.resetHandlers()
+  vi.clearAllMocks()
+})
+
+afterAll(() => {
+  server.close()
+})
+
+// Mock import.meta.env globally
+Object.defineProperty(globalThis, 'import', {
+  value: {
+    meta: {
+      env: {
+        MODE: 'test'
+      }
+    }
+  },
+  writable: true
+})
+
+// Mock window object for browser-specific tests
+Object.defineProperty(globalThis, 'window', {
+  value: {
+    location: {
+      href: 'http://localhost:3000'
+    }
+  },
+  writable: true
+})
+
+// Suppress console warnings during tests
+vi.spyOn(console, 'warn').mockImplementation(() => {})
+vi.spyOn(console, 'error').mockImplementation(() => {})
+vi.spyOn(console, 'log').mockImplementation(() => {})
