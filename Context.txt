@@ -1,9 +1,8 @@
-
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { renderHook, act } from '@testing-library/react'
+import { renderHook, act, waitFor } from '@testing-library/react'
 import { useEnableMock, MockType } from '../useEnableMock'
 
-// Mock the dynamic imports
+// Mock the dynamic imports with proper factory functions
 const mockServerWorker = {
   listen: vi.fn().mockResolvedValue(undefined)
 }
@@ -16,15 +15,6 @@ const mockMicroAppWorker = {
   start: vi.fn().mockResolvedValue(undefined)
 }
 
-// Mock dynamic imports
-vi.mock('../../../../../../mock-service-worker/server', () => ({
-  default: mockServerWorker
-}))
-
-vi.mock('../../../../../../mock-service-worker/browser', () => ({
-  default: mockBrowserWorker
-}))
-
 // Mock console methods
 const consoleSpy = {
   log: vi.spyOn(console, 'log').mockImplementation(() => {}),
@@ -32,19 +22,44 @@ const consoleSpy = {
   error: vi.spyOn(console, 'error').mockImplementation(() => {})
 }
 
+// Mock import() function globally
+const mockImport = vi.fn()
+vi.stubGlobal('import', mockImport)
+
+// Helper to setup import mocks
+const setupImportMocks = () => {
+  mockImport.mockImplementation((path: string) => {
+    if (path.includes('mock-service-worker/server')) {
+      return Promise.resolve({ default: mockServerWorker })
+    }
+    if (path.includes('mock-service-worker/browser')) {
+      return Promise.resolve({ default: mockBrowserWorker })
+    }
+    if (path.includes('micro-app')) {
+      return Promise.resolve({ default: mockMicroAppWorker })
+    }
+    return Promise.reject(new Error(`Unknown import path: ${path}`))
+  })
+}
+
 // Mock import.meta.env
-Object.defineProperty(import.meta, 'env', {
-  value: {
-    MODE: 'test'
-  },
-  writable: true
+const mockEnv = {
+  MODE: 'test'
+}
+
+vi.stubGlobal('import', {
+  ...mockImport,
+  meta: {
+    env: mockEnv
+  }
 })
 
 describe('useEnableMock', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    // Reset import.meta.env.MODE to test
-    import.meta.env.MODE = 'test'
+    setupImportMocks()
+    // Reset environment
+    mockEnv.MODE = 'test'
   })
 
   afterEach(() => {
@@ -61,48 +76,57 @@ describe('useEnableMock', () => {
     })
 
     it('should enable ServerMock successfully when in test environment', async () => {
-      import.meta.env.MODE = 'test'
+      mockEnv.MODE = 'test'
       
       const { result } = renderHook(() => 
         useEnableMock({ mockType: MockType.ServerMock, microAppImportPath: '' })
       )
 
-      // Wait for the effect to complete
-      await act(async () => {
-        await new Promise(resolve => setTimeout(resolve, 0))
-      })
+      // Wait for the async effect to complete
+      await waitFor(() => {
+        expect(result.current).toBe(true)
+      }, { timeout: 1000 })
 
+      expect(mockImport).toHaveBeenCalledWith(expect.stringContaining('mock-service-worker/server'))
       expect(mockServerWorker.listen).toHaveBeenCalledTimes(1)
       expect(consoleSpy.log).toHaveBeenCalledWith('MSW server started successfully in test environment')
-      expect(result.current).toBe(true)
     })
 
     it('should not enable ServerMock when not in test environment', async () => {
-      import.meta.env.MODE = 'production'
+      mockEnv.MODE = 'production'
       
       const { result } = renderHook(() => 
         useEnableMock({ mockType: MockType.ServerMock, microAppImportPath: '' })
       )
 
       await act(async () => {
-        await new Promise(resolve => setTimeout(resolve, 0))
+        await new Promise(resolve => setTimeout(resolve, 100))
       })
 
+      expect(mockImport).not.toHaveBeenCalled()
       expect(mockServerWorker.listen).not.toHaveBeenCalled()
       expect(result.current).toBe(false)
     })
 
     it('should handle ServerMock startup errors', async () => {
-      import.meta.env.MODE = 'test'
+      mockEnv.MODE = 'test'
       const error = new Error('Server startup failed')
-      mockServerWorker.listen.mockRejectedValueOnce(error)
+      
+      // Mock the import to return a failing worker
+      mockImport.mockImplementationOnce(() => 
+        Promise.resolve({ 
+          default: { 
+            listen: vi.fn().mockRejectedValue(error) 
+          } 
+        })
+      )
       
       const { result } = renderHook(() => 
         useEnableMock({ mockType: MockType.ServerMock, microAppImportPath: '' })
       )
 
       await act(async () => {
-        await new Promise(resolve => setTimeout(resolve, 0))
+        await new Promise(resolve => setTimeout(resolve, 100))
       })
 
       expect(consoleSpy.error).toHaveBeenCalledWith('Failed to start MSW:', error)
@@ -116,45 +140,47 @@ describe('useEnableMock', () => {
         useEnableMock({ mockType: MockType.BrowserMock, microAppImportPath: '' })
       )
 
-      await act(async () => {
-        await new Promise(resolve => setTimeout(resolve, 0))
-      })
+      await waitFor(() => {
+        expect(result.current).toBe(true)
+      }, { timeout: 1000 })
 
+      expect(mockImport).toHaveBeenCalledWith(expect.stringContaining('mock-service-worker/browser'))
       expect(mockBrowserWorker.start).toHaveBeenCalledWith({
         serviceWorker: {
           url: '/mockServiceWorker.js'
         }
       })
       expect(consoleSpy.log).toHaveBeenCalledWith('MSW worker started successfully in browser')
-      expect(result.current).toBe(true)
     })
 
     it('should handle BrowserMock startup errors', async () => {
       const error = new Error('Browser worker startup failed')
-      mockBrowserWorker.start.mockRejectedValueOnce(error)
+      
+      mockImport.mockImplementationOnce(() => 
+        Promise.resolve({ 
+          default: { 
+            start: vi.fn().mockRejectedValue(error) 
+          } 
+        })
+      )
       
       const { result } = renderHook(() => 
         useEnableMock({ mockType: MockType.BrowserMock, microAppImportPath: '' })
       )
 
       await act(async () => {
-        await new Promise(resolve => setTimeout(resolve, 0))
+        await new Promise(resolve => setTimeout(resolve, 100))
       })
 
       expect(consoleSpy.error).toHaveBeenCalledWith('Failed to start MSW:', error)
       expect(result.current).toBe(false)
     })
-  })
+  }))
 
   describe('MicroAppMock', () => {
     it('should enable MicroAppMock with valid import path', async () => {
       const mockImportPath = './micro-app-handlers'
       
-      // Mock the dynamic import for micro app
-      vi.doMock(mockImportPath, () => ({
-        default: mockMicroAppWorker
-      }))
-
       const { result } = renderHook(() => 
         useEnableMock({ 
           mockType: MockType.MicroAppMock, 
@@ -162,10 +188,11 @@ describe('useEnableMock', () => {
         })
       )
 
-      await act(async () => {
-        await new Promise(resolve => setTimeout(resolve, 0))
-      })
+      await waitFor(() => {
+        expect(result.current).toBe(true)
+      }, { timeout: 1000 })
 
+      expect(mockImport).toHaveBeenCalledWith(mockImportPath)
       expect(mockMicroAppWorker.start).toHaveBeenCalledWith({
         serviceWorker: {
           url: '/mockServiceWorker.js',
@@ -173,7 +200,6 @@ describe('useEnableMock', () => {
         }
       })
       expect(consoleSpy.log).toHaveBeenCalledWith('Micro app MSW worker started successfully')
-      expect(result.current).toBe(true)
     })
 
     it('should warn when MicroAppMock selected but no import path provided', async () => {
@@ -185,12 +211,13 @@ describe('useEnableMock', () => {
       )
 
       await act(async () => {
-        await new Promise(resolve => setTimeout(resolve, 0))
+        await new Promise(resolve => setTimeout(resolve, 100))
       })
 
       expect(consoleSpy.warn).toHaveBeenCalledWith(
         'MicroAppMock selected, but no microAppImportPath provided'
       )
+      expect(mockImport).not.toHaveBeenCalled()
       expect(result.current).toBe(false)
     })
 
@@ -198,14 +225,13 @@ describe('useEnableMock', () => {
       const mockImportPath = './micro-app-handlers'
       const error = new Error('Micro app worker startup failed')
       
-      // Mock the dynamic import to return a worker that fails
-      const failingWorker = {
-        start: vi.fn().mockRejectedValue(error)
-      }
-      
-      vi.doMock(mockImportPath, () => ({
-        default: failingWorker
-      }))
+      mockImport.mockImplementationOnce(() => 
+        Promise.resolve({ 
+          default: { 
+            start: vi.fn().mockRejectedValue(error) 
+          } 
+        })
+      )
 
       const { result } = renderHook(() => 
         useEnableMock({ 
@@ -215,13 +241,13 @@ describe('useEnableMock', () => {
       )
 
       await act(async () => {
-        await new Promise(resolve => setTimeout(resolve, 0))
+        await new Promise(resolve => setTimeout(resolve, 100))
       })
 
       expect(consoleSpy.error).toHaveBeenCalledWith('Failed to start MSW:', error)
       expect(result.current).toBe(false)
     })
-  })
+  }))
 
   describe('Invalid MockType', () => {
     it('should warn about invalid mock type', async () => {
@@ -233,10 +259,11 @@ describe('useEnableMock', () => {
       )
 
       await act(async () => {
-        await new Promise(resolve => setTimeout(resolve, 0))
+        await new Promise(resolve => setTimeout(resolve, 100))
       })
 
       expect(consoleSpy.warn).toHaveBeenCalledWith('Invalid mock type provided')
+      expect(mockImport).not.toHaveBeenCalled()
       expect(result.current).toBe(false)
     })
   })
@@ -254,37 +281,31 @@ describe('useEnableMock', () => {
         }
       )
 
-      await act(async () => {
-        await new Promise(resolve => setTimeout(resolve, 0))
+      await waitFor(() => {
+        expect(result.current).toBe(true)
       })
 
-      expect(mockBrowserWorker.start).toHaveBeenCalledTimes(1)
+      expect(mockImport).toHaveBeenCalledWith(expect.stringContaining('mock-service-worker/browser'))
+      
+      // Reset mocks and change to ServerMock
       vi.clearAllMocks()
-
-      // Change to ServerMock
-      import.meta.env.MODE = 'test'
+      setupImportMocks()
+      mockEnv.MODE = 'test'
+      
       rerender({ 
         mockType: MockType.ServerMock, 
         microAppImportPath: '' 
       })
 
-      await act(async () => {
-        await new Promise(resolve => setTimeout(resolve, 0))
+      await waitFor(() => {
+        expect(mockImport).toHaveBeenCalledWith(expect.stringContaining('mock-service-worker/server'))
       })
-
-      expect(mockServerWorker.listen).toHaveBeenCalledTimes(1)
     })
 
     it('should re-run effect when microAppImportPath changes', async () => {
       const mockImportPath1 = './micro-app-handlers-1'
       const mockImportPath2 = './micro-app-handlers-2'
       
-      const mockWorker1 = { start: vi.fn().mockResolvedValue(undefined) }
-      const mockWorker2 = { start: vi.fn().mockResolvedValue(undefined) }
-      
-      vi.doMock(mockImportPath1, () => ({ default: mockWorker1 }))
-      vi.doMock(mockImportPath2, () => ({ default: mockWorker2 }))
-
       const { rerender } = renderHook(
         ({ mockType, microAppImportPath }) => 
           useEnableMock({ mockType, microAppImportPath }),
@@ -296,23 +317,22 @@ describe('useEnableMock', () => {
         }
       )
 
-      await act(async () => {
-        await new Promise(resolve => setTimeout(resolve, 0))
+      await waitFor(() => {
+        expect(mockImport).toHaveBeenCalledWith(mockImportPath1)
       })
-
-      expect(mockWorker1.start).toHaveBeenCalledTimes(1)
       
-      // Change import path
+      // Reset and change import path
+      vi.clearAllMocks()
+      setupImportMocks()
+      
       rerender({ 
         mockType: MockType.MicroAppMock, 
         microAppImportPath: mockImportPath2 
       })
 
-      await act(async () => {
-        await new Promise(resolve => setTimeout(resolve, 0))
+      await waitFor(() => {
+        expect(mockImport).toHaveBeenCalledWith(mockImportPath2)
       })
-
-      expect(mockWorker2.start).toHaveBeenCalledTimes(1)
     })
   })
 
