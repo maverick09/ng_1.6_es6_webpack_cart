@@ -1,0 +1,981 @@
+# Micro Frontend Project with Shared MSW Setup
+
+## Project Structure
+
+```
+monorepo-root/
+├── nx.json
+├── package.json
+├── apps/
+│   ├── shell/
+│   │   ├── src/
+│   │   │   ├── main.tsx
+│   │   │   ├── App.tsx
+│   │   │   ├── bootstrap.tsx
+│   │   │   └── remoteTypes.d.ts
+│   │   ├── vite.config.ts
+│   │   ├── tsconfig.json
+│   │   └── package.json
+│   └── vol-pub/
+│       ├── src/
+│       │   ├── main.tsx
+│       │   ├── App.tsx
+│       │   ├── bootstrap.tsx
+│       │   └── VolPubWidget.tsx
+│       ├── vite.config.ts
+│       ├── tsconfig.json
+│       └── package.json
+├── libs/
+│   └── shared/
+│       ├── mocks/
+│       │   ├── src/
+│       │   │   ├── index.ts
+│       │   │   ├── browser.ts
+│       │   │   ├── handlers/
+│       │   │   │   ├── index.ts
+│       │   │   │   └── api.handlers.ts
+│       │   │   ├── context/
+│       │   │   │   ├── MockProvider.tsx
+│       │   │   │   └── index.ts
+│       │   │   └── utils/
+│       │   │       └── mockUtils.ts
+│       │   ├── tsconfig.json
+│       │   └── package.json
+│       └── ui/
+│           └── src/
+│               └── index.ts
+└── tsconfig.base.json
+```
+
+## 1. Root Configuration Files
+
+### package.json (Root)
+```json
+{
+  "name": "mfe-project",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "nx run-many --target=dev --all --parallel",
+    "dev:shell": "nx run shell:dev",
+    "dev:vol-pub": "nx run vol-pub:dev",
+    "build": "nx run-many --target=build --all",
+    "test": "nx run-many --target=test --all",
+    "e2e": "nx e2e shell-e2e"
+  },
+  "devDependencies": {
+    "@nx/vite": "^19.0.0",
+    "@nx/react": "^19.0.0",
+    "@nx/workspace": "^19.0.0",
+    "@module-federation/vite": "^1.0.0",
+    "@types/node": "^20.0.0",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.0",
+    "@vitest/ui": "^2.0.0",
+    "@playwright/test": "^1.45.0",
+    "msw": "^2.3.0",
+    "nx": "^19.0.0",
+    "typescript": "^5.5.0",
+    "vite": "^5.3.0",
+    "vitest": "^2.0.0"
+  },
+  "dependencies": {
+    "react": "^19.0.0-rc",
+    "react-dom": "^19.0.0-rc"
+  },
+  "workspaces": [
+    "apps/*",
+    "libs/*"
+  ]
+}
+```
+
+### nx.json
+```json
+{
+  "npmScope": "mfe",
+  "affected": {
+    "defaultBase": "main"
+  },
+  "workspaceLayout": {
+    "appsDir": "apps",
+    "libsDir": "libs"
+  },
+  "targetDefaults": {
+    "dev": {
+      "executor": "@nx/vite:dev-server"
+    },
+    "build": {
+      "executor": "@nx/vite:build"
+    },
+    "test": {
+      "executor": "@nx/vite:test"
+    }
+  }
+}
+```
+
+### tsconfig.base.json
+```json
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "paths": {
+      "@mfe/shared/mocks": ["libs/shared/mocks/src/index.ts"],
+      "@mfe/shared/ui": ["libs/shared/ui/src/index.ts"]
+    }
+  }
+}
+```
+
+## 2. Shared MSW Library Configuration
+
+### libs/shared/mocks/src/browser.ts
+```typescript
+// MSW Browser setup - single instance shared across all micro-frontends
+import { setupWorker } from 'msw/browser';
+import { handlers } from './handlers';
+
+// Create the MSW worker instance with all handlers
+export const worker = setupWorker(...handlers);
+
+// Configuration for MSW service worker
+export const workerConfig = {
+  onUnhandledRequest: 'bypass' as const,
+  serviceWorker: {
+    // CRITICAL: This ensures the service worker has the correct scope
+    // to intercept requests from all micro-frontends
+    url: '/mockServiceWorker.js',
+    options: {
+      // Scope is set to root to catch all requests
+      scope: '/'
+    }
+  }
+};
+
+// Initialize function with error handling
+export async function initializeMSW() {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  // Check if we're in development mode
+  if (process.env.NODE_ENV !== 'development') {
+    console.log('MSW is disabled in production');
+    return;
+  }
+
+  try {
+    // Start the worker with our configuration
+    await worker.start(workerConfig);
+    console.log('🔧 MSW initialized successfully');
+    
+    // Log active handlers for debugging
+    console.log('Active mock handlers:', handlers.map(h => h.info.header));
+    
+    return worker;
+  } catch (error) {
+    console.error('Failed to initialize MSW:', error);
+    throw error;
+  }
+}
+
+// Helper to check if MSW is running
+export function isMSWRunning(): boolean {
+  return typeof window !== 'undefined' && 
+         'serviceWorker' in navigator && 
+         worker.listHandlers().length > 0;
+}
+```
+
+### libs/shared/mocks/src/handlers/api.handlers.ts
+```typescript
+// Shared API handlers used across all micro-frontends
+import { http, HttpResponse } from 'msw';
+
+// Base URL configuration for different environments
+const API_BASE = process.env.VITE_API_BASE_URL || 'http://localhost:3000';
+
+export const apiHandlers = [
+  // User endpoints
+  http.get(`${API_BASE}/api/users`, () => {
+    console.log('MSW: Intercepted GET /api/users');
+    return HttpResponse.json([
+      { id: 1, name: 'John Doe', email: 'john@example.com' },
+      { id: 2, name: 'Jane Smith', email: 'jane@example.com' }
+    ]);
+  }),
+
+  http.get(`${API_BASE}/api/users/:id`, ({ params }) => {
+    console.log(`MSW: Intercepted GET /api/users/${params.id}`);
+    return HttpResponse.json({
+      id: params.id,
+      name: 'Test User',
+      email: 'test@example.com'
+    });
+  }),
+
+  // Volume/Publication specific endpoints (for vol-pub remote)
+  http.get(`${API_BASE}/api/volumes`, () => {
+    console.log('MSW: Intercepted GET /api/volumes');
+    return HttpResponse.json([
+      { id: 1, title: 'Volume 1', year: 2024, articles: 10 },
+      { id: 2, title: 'Volume 2', year: 2024, articles: 15 }
+    ]);
+  }),
+
+  http.get(`${API_BASE}/api/publications`, () => {
+    console.log('MSW: Intercepted GET /api/publications');
+    return HttpResponse.json([
+      { id: 1, title: 'Publication A', author: 'Author 1', volume: 1 },
+      { id: 2, title: 'Publication B', author: 'Author 2', volume: 1 }
+    ]);
+  }),
+
+  // Generic health check endpoint
+  http.get(`${API_BASE}/api/health`, () => {
+    console.log('MSW: Health check intercepted');
+    return HttpResponse.json({ status: 'healthy', timestamp: new Date().toISOString() });
+  })
+];
+```
+
+### libs/shared/mocks/src/handlers/index.ts
+```typescript
+// Aggregate all handlers
+import { apiHandlers } from './api.handlers';
+import { RequestHandler } from 'msw';
+
+// Export combined handlers array
+export const handlers: RequestHandler[] = [
+  ...apiHandlers,
+  // Add more handler groups here as needed
+];
+
+// Dynamic handler registration for runtime updates
+export function addRuntimeHandlers(newHandlers: RequestHandler[]) {
+  if (typeof window !== 'undefined' && window.__mswWorker) {
+    window.__mswWorker.use(...newHandlers);
+    console.log('Runtime handlers added:', newHandlers.length);
+  }
+}
+```
+
+### libs/shared/mocks/src/context/MockProvider.tsx
+```tsx
+// React Context Provider for MSW state management
+import React, { createContext, useContext, useEffect, useState, ReactNode } from 'react';
+import { initializeMSW, worker, isMSWRunning } from '../browser';
+import { RequestHandler } from 'msw';
+
+interface MockContextValue {
+  isReady: boolean;
+  isEnabled: boolean;
+  enableMocks: () => Promise<void>;
+  disableMocks: () => void;
+  addHandlers: (handlers: RequestHandler[]) => void;
+  removeHandlers: (handlers: RequestHandler[]) => void;
+}
+
+const MockContext = createContext<MockContextValue | undefined>(undefined);
+
+interface MockProviderProps {
+  children: ReactNode;
+  autoStart?: boolean;
+  onReady?: () => void;
+}
+
+export function MockProvider({ children, autoStart = true, onReady }: MockProviderProps) {
+  const [isReady, setIsReady] = useState(false);
+  const [isEnabled, setIsEnabled] = useState(false);
+
+  useEffect(() => {
+    // Only initialize in development
+    if (process.env.NODE_ENV !== 'development') {
+      setIsReady(true);
+      return;
+    }
+
+    // Check if MSW is already running (from shell)
+    if (isMSWRunning()) {
+      console.log('MSW already initialized by shell');
+      setIsReady(true);
+      setIsEnabled(true);
+      onReady?.();
+      return;
+    }
+
+    // Initialize MSW if autoStart is enabled and not already running
+    if (autoStart) {
+      initializeMSW()
+        .then(() => {
+          setIsReady(true);
+          setIsEnabled(true);
+          onReady?.();
+          
+          // Store worker reference globally for cross-microfrontend access
+          (window as any).__mswWorker = worker;
+        })
+        .catch((error) => {
+          console.error('Failed to initialize MSW:', error);
+          setIsReady(true);
+          setIsEnabled(false);
+        });
+    } else {
+      setIsReady(true);
+    }
+  }, [autoStart, onReady]);
+
+  const enableMocks = async () => {
+    if (!isEnabled && process.env.NODE_ENV === 'development') {
+      try {
+        await initializeMSW();
+        setIsEnabled(true);
+      } catch (error) {
+        console.error('Failed to enable mocks:', error);
+      }
+    }
+  };
+
+  const disableMocks = () => {
+    if (isEnabled && worker) {
+      worker.stop();
+      setIsEnabled(false);
+    }
+  };
+
+  const addHandlers = (handlers: RequestHandler[]) => {
+    if (worker && isEnabled) {
+      worker.use(...handlers);
+    }
+  };
+
+  const removeHandlers = (handlers: RequestHandler[]) => {
+    if (worker && isEnabled) {
+      worker.resetHandlers();
+      // Re-add original handlers minus the ones to remove
+      // This is a simplified implementation
+    }
+  };
+
+  const value: MockContextValue = {
+    isReady,
+    isEnabled,
+    enableMocks,
+    disableMocks,
+    addHandlers,
+    removeHandlers,
+  };
+
+  return <MockContext.Provider value={value}>{children}</MockContext.Provider>;
+}
+
+export function useMocks() {
+  const context = useContext(MockContext);
+  if (context === undefined) {
+    throw new Error('useMocks must be used within a MockProvider');
+  }
+  return context;
+}
+```
+
+### libs/shared/mocks/src/index.ts
+```typescript
+// Main export file for the shared mocks library
+export { initializeMSW, worker, isMSWRunning } from './browser';
+export { handlers } from './handlers';
+export { MockProvider, useMocks } from './context/MockProvider';
+export type { RequestHandler } from 'msw';
+```
+
+## 3. Shell Application Setup
+
+### apps/shell/src/bootstrap.tsx
+```tsx
+// Bootstrap file for async loading and MSW initialization
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+import { initializeMSW } from '@mfe/shared/mocks';
+import App from './App';
+
+// Initialize MSW before rendering the shell
+async function startApp() {
+  // Initialize MSW in development
+  if (process.env.NODE_ENV === 'development') {
+    try {
+      await initializeMSW();
+      console.log('✅ Shell: MSW initialized successfully');
+    } catch (error) {
+      console.error('❌ Shell: Failed to initialize MSW:', error);
+    }
+  }
+
+  // Render the shell application
+  const root = ReactDOM.createRoot(document.getElementById('root') as HTMLElement);
+  root.render(
+    <React.StrictMode>
+      <App />
+    </React.StrictMode>
+  );
+}
+
+startApp();
+```
+
+### apps/shell/src/main.tsx
+```tsx
+// Entry point using dynamic import for module federation
+import('./bootstrap');
+```
+
+### apps/shell/src/App.tsx
+```tsx
+// Shell application with module federation remote loading
+import React, { Suspense, lazy, useEffect, useState } from 'react';
+import { MockProvider, useMocks } from '@mfe/shared/mocks';
+
+// Lazy load the remote module
+const VolPubWidget = lazy(() => 
+  import('volPub/Widget').catch(() => {
+    console.error('Failed to load vol-pub remote');
+    return { default: () => <div>Failed to load Volume/Publication module</div> };
+  })
+);
+
+function ShellContent() {
+  const { isReady, isEnabled } = useMocks();
+  const [data, setData] = useState(null);
+
+  useEffect(() => {
+    // Test API call from shell
+    fetch('http://localhost:3000/api/health')
+      .then(res => res.json())
+      .then(data => {
+        console.log('Shell health check response:', data);
+        setData(data);
+      })
+      .catch(err => console.error('Shell fetch error:', err));
+  }, []);
+
+  return (
+    <div style={{ padding: '20px' }}>
+      <h1>🏠 Shell Application</h1>
+      
+      <div style={{ marginBottom: '20px', padding: '10px', background: '#f0f0f0', borderRadius: '5px' }}>
+        <h3>MSW Status:</h3>
+        <p>Ready: {isReady ? '✅' : '⏳'}</p>
+        <p>Mocks Enabled: {isEnabled ? '✅' : '❌'}</p>
+        {data && <p>Health Check: {JSON.stringify(data)}</p>}
+      </div>
+
+      <div style={{ border: '2px solid #007bff', padding: '20px', borderRadius: '10px' }}>
+        <h2>Remote Application Container</h2>
+        <Suspense fallback={<div>Loading Volume/Publication Module...</div>}>
+          <VolPubWidget />
+        </Suspense>
+      </div>
+    </div>
+  );
+}
+
+export default function App() {
+  return (
+    <MockProvider 
+      autoStart={false} // MSW already started in bootstrap
+      onReady={() => console.log('Shell MockProvider ready')}
+    >
+      <ShellContent />
+    </MockProvider>
+  );
+}
+```
+
+### apps/shell/src/remoteTypes.d.ts
+```typescript
+// Type declarations for remote modules
+declare module 'volPub/Widget' {
+  const Widget: React.ComponentType;
+  export default Widget;
+}
+
+// Global MSW worker reference
+declare global {
+  interface Window {
+    __mswWorker?: any;
+  }
+}
+```
+
+### apps/shell/vite.config.ts
+```typescript
+// Vite configuration with Module Federation for Shell
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
+import { federation } from '@module-federation/vite';
+import { resolve } from 'path';
+
+export default defineConfig({
+  plugins: [
+    react(),
+    federation({
+      name: 'shell',
+      remotes: {
+        volPub: 'volPub@http://localhost:9000/remoteEntry.js'
+      },
+      shared: {
+        react: { 
+          singleton: true,
+          requiredVersion: '^19.0.0-rc'
+        },
+        'react-dom': { 
+          singleton: true,
+          requiredVersion: '^19.0.0-rc'
+        },
+        '@mfe/shared/mocks': {
+          singleton: true,
+          eager: true
+        }
+      }
+    })
+  ],
+  server: {
+    port: 8080,
+    cors: true,
+    headers: {
+      'Access-Control-Allow-Origin': '*'
+    }
+  },
+  build: {
+    target: 'esnext',
+    modulePreload: false
+  },
+  resolve: {
+    alias: {
+      '@mfe/shared/mocks': resolve(__dirname, '../../libs/shared/mocks/src')
+    }
+  },
+  define: {
+    'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV)
+  }
+});
+```
+
+## 4. Vol-Pub Remote Application
+
+### apps/vol-pub/src/bootstrap.tsx
+```tsx
+// Bootstrap for remote application
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+import App from './App';
+import { initializeMSW, isMSWRunning } from '@mfe/shared/mocks';
+
+async function startApp() {
+  // Check if running standalone (not in shell)
+  const isStandalone = !window.location.pathname.includes('shell');
+  
+  if (isStandalone && process.env.NODE_ENV === 'development') {
+    // Only initialize MSW if not already running (by shell)
+    if (!isMSWRunning()) {
+      try {
+        await initializeMSW();
+        console.log('✅ Vol-Pub: MSW initialized (standalone mode)');
+      } catch (error) {
+        console.error('❌ Vol-Pub: Failed to initialize MSW:', error);
+      }
+    } else {
+      console.log('ℹ️ Vol-Pub: MSW already running (loaded by shell)');
+    }
+  }
+
+  // Only render full app if standalone
+  if (isStandalone) {
+    const root = ReactDOM.createRoot(document.getElementById('root') as HTMLElement);
+    root.render(
+      <React.StrictMode>
+        <App />
+      </React.StrictMode>
+    );
+  }
+}
+
+// Start the application
+startApp();
+```
+
+### apps/vol-pub/src/main.tsx
+```tsx
+// Entry point with module federation setup
+import('./bootstrap');
+
+// Export the widget for shell consumption
+export { default } from './VolPubWidget';
+```
+
+### apps/vol-pub/src/VolPubWidget.tsx
+```tsx
+// Exportable widget component for module federation
+import React, { useEffect, useState } from 'react';
+import { MockProvider, useMocks } from '@mfe/shared/mocks';
+
+interface Volume {
+  id: number;
+  title: string;
+  year: number;
+  articles: number;
+}
+
+interface Publication {
+  id: number;
+  title: string;
+  author: string;
+  volume: number;
+}
+
+function VolPubContent() {
+  const { isEnabled } = useMocks();
+  const [volumes, setVolumes] = useState<Volume[]>([]);
+  const [publications, setPublications] = useState<Publication[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    // Fetch data - these requests will be intercepted by MSW
+    Promise.all([
+      fetch('http://localhost:3000/api/volumes').then(res => res.json()),
+      fetch('http://localhost:3000/api/publications').then(res => res.json())
+    ])
+      .then(([volumesData, publicationsData]) => {
+        console.log('Vol-Pub received data:', { volumesData, publicationsData });
+        setVolumes(volumesData);
+        setPublications(publicationsData);
+        setLoading(false);
+      })
+      .catch(err => {
+        console.error('Vol-Pub fetch error:', err);
+        setLoading(false);
+      });
+  }, []);
+
+  if (loading) {
+    return <div>Loading volumes and publications...</div>;
+  }
+
+  return (
+    <div style={{ padding: '15px', background: '#e8f4fd', borderRadius: '8px' }}>
+      <h3>📚 Volume & Publication Module</h3>
+      <p>MSW Status: {isEnabled ? '✅ Active' : '❌ Inactive'}</p>
+      
+      <div style={{ marginTop: '15px' }}>
+        <h4>Volumes:</h4>
+        <ul>
+          {volumes.map(vol => (
+            <li key={vol.id}>
+              {vol.title} ({vol.year}) - {vol.articles} articles
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      <div style={{ marginTop: '15px' }}>
+        <h4>Recent Publications:</h4>
+        <ul>
+          {publications.map(pub => (
+            <li key={pub.id}>
+              "{pub.title}" by {pub.author} (Volume {pub.volume})
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+// Widget component exported for module federation
+export default function VolPubWidget() {
+  // Check if MSW is already provided by shell
+  const hasExistingMSW = typeof window !== 'undefined' && window.__mswWorker;
+  
+  return (
+    <MockProvider 
+      autoStart={!hasExistingMSW} // Don't start if shell already did
+      onReady={() => console.log('Vol-Pub MockProvider ready')}
+    >
+      <VolPubContent />
+    </MockProvider>
+  );
+}
+```
+
+### apps/vol-pub/src/App.tsx
+```tsx
+// Standalone app wrapper (for development)
+import React from 'react';
+import VolPubWidget from './VolPubWidget';
+
+export default function App() {
+  return (
+    <div style={{ padding: '20px' }}>
+      <h1>Vol-Pub Standalone Application</h1>
+      <VolPubWidget />
+    </div>
+  );
+}
+```
+
+### apps/vol-pub/vite.config.ts
+```typescript
+// Vite configuration for remote application
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
+import { federation } from '@module-federation/vite';
+import { resolve } from 'path';
+
+export default defineConfig({
+  plugins: [
+    react(),
+    federation({
+      name: 'volPub',
+      filename: 'remoteEntry.js',
+      exposes: {
+        './Widget': './src/VolPubWidget.tsx'
+      },
+      shared: {
+        react: { 
+          singleton: true,
+          requiredVersion: '^19.0.0-rc'
+        },
+        'react-dom': { 
+          singleton: true,
+          requiredVersion: '^19.0.0-rc'
+        },
+        '@mfe/shared/mocks': {
+          singleton: true,
+          eager: true
+        }
+      }
+    })
+  ],
+  server: {
+    port: 9000,
+    cors: true,
+    headers: {
+      'Access-Control-Allow-Origin': '*'
+    }
+  },
+  build: {
+    target: 'esnext',
+    modulePreload: false
+  },
+  resolve: {
+    alias: {
+      '@mfe/shared/mocks': resolve(__dirname, '../../libs/shared/mocks/src')
+    }
+  },
+  define: {
+    'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV)
+  }
+});
+```
+
+## 5. MSW Service Worker File
+
+### public/mockServiceWorker.js (in both shell and vol-pub)
+```javascript
+// Copy this file from node_modules/msw/lib/mockServiceWorker.js
+// Run: npx msw init public/ --save
+// This creates the service worker file that MSW needs
+```
+
+## 6. Test Configuration
+
+### vitest.config.ts (Root or per app)
+```typescript
+import { defineConfig } from 'vitest/config';
+import react from '@vitejs/plugin-react';
+
+export default defineConfig({
+  plugins: [react()],
+  test: {
+    environment: 'jsdom',
+    setupFiles: ['./test/setup.ts'],
+    globals: true,
+    coverage: {
+      reporter: ['text', 'json', 'html']
+    }
+  }
+});
+```
+
+### test/setup.ts
+```typescript
+// Test setup file with MSW
+import { beforeAll, afterEach, afterAll } from 'vitest';
+import { server } from './test-server';
+
+// Start server before all tests
+beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
+
+// Reset handlers after each test
+afterEach(() => server.resetHandlers());
+
+// Clean up after all tests
+afterAll(() => server.close());
+```
+
+### test/test-server.ts
+```typescript
+// MSW server for testing
+import { setupServer } from 'msw/node';
+import { handlers } from '@mfe/shared/mocks';
+
+export const server = setupServer(...handlers);
+```
+
+## 7. Playwright E2E Configuration
+
+### playwright.config.ts
+```typescript
+import { defineConfig, devices } from '@playwright/test';
+
+export default defineConfig({
+  testDir: './e2e',
+  fullyParallel: true,
+  forbidOnly: !!process.env.CI,
+  retries: process.env.CI ? 2 : 0,
+  workers: process.env.CI ? 1 : undefined,
+  reporter: 'html',
+  use: {
+    baseURL: 'http://localhost:8080',
+    trace: 'on-first-retry',
+  },
+  projects: [
+    {
+      name: 'chromium',
+      use: { ...devices['Desktop Chrome'] },
+    },
+  ],
+  webServer: {
+    command: 'npm run dev:shell',
+    port: 8080,
+    reuseExistingServer: !process.env.CI,
+  },
+});
+```
+
+### e2e/integration.spec.ts
+```typescript
+import { test, expect } from '@playwright/test';
+
+test.describe('Micro Frontend Integration', () => {
+  test('should load shell with remote module', async ({ page }) => {
+    await page.goto('/');
+    
+    // Check shell loaded
+    await expect(page.locator('h1')).toContainText('Shell Application');
+    
+    // Check MSW is active
+    await expect(page.locator('text=Mocks Enabled: ✅')).toBeVisible();
+    
+    // Check remote module loaded
+    await expect(page.locator('text=Volume & Publication Module')).toBeVisible();
+    
+    // Verify mock data is displayed
+    await expect(page.locator('text=Volume 1')).toBeVisible();
+    await expect(page.locator('text=Publication A')).toBeVisible();
+  });
+
+  test('MSW intercepts requests from remote module', async ({ page }) => {
+    // Monitor network requests
+    const requests: string[] = [];
+    page.on('request', request => {
+      if (request.url().includes('/api/')) {
+        requests.push(request.url());
+      }
+    });
+
+    await page.goto('/');
+    await page.waitForLoadState('networkidle');
+
+    // Verify API calls were made
+    expect(requests).toContain('http://localhost:3000/api/volumes');
+    expect(requests).toContain('http://localhost:3000/api/publications');
+    
+    // Verify responses are mocked (check console logs)
+    const consoleLogs = [];
+    page.on('console', msg => consoleLogs.push(msg.text()));
+    
+    await page.reload();
+    await page.waitForTimeout(1000);
+    
+    const mswLogs = consoleLogs.filter(log => log.includes('MSW:'));
+    expect(mswLogs.length).toBeGreaterThan(0);
+  });
+});
+```
+
+## Running the Project
+
+1. **Install Dependencies:**
+```bash
+npm install
+npx msw init apps/shell/public/ --save
+npx msw init apps/vol-pub/public/ --save
+```
+
+2. **Start Development:**
+```bash
+# Start both shell and remote
+npm run dev
+
+# Or individually
+npm run dev:shell  # Shell on http://localhost:8080
+npm run dev:vol-pub # Vol-Pub on http://localhost:9000
+```
+
+3. **Run Tests:**
+```bash
+npm run test        # Unit tests
+npx playwright test # E2E tests
+```
+
+## Key Implementation Details
+
+### How MSW Works Across Micro-Frontends:
+
+1. **Service Worker Scope**: MSW's service worker operates at the browser level, not application level. When registered with scope '/', it intercepts ALL matching network requests regardless of which micro-frontend initiates them.
+
+2. **Single Initialization**: The shell initializes MSW once, and the service worker remains active for all subsequently loaded remote modules.
+
+3. **Shared Handler Management**: All handlers are defined in the shared library and loaded once. Remote apps can add additional handlers if needed.
+
+4. **Context Provider Pattern**: Each app wraps its content in MockProvider, but only the shell actually starts MSW. Remote apps detect existing MSW and skip initialization.
+
+5. **Module Federation Sharing**: The '@mfe/shared/mocks' module is marked as singleton and eager, ensuring only one instance exists across all apps.
+
+### Lambda Pattern Implementation:
+
+The lambda pattern (loading remotes dynamically) is implemented through:
+- Dynamic imports in the shell: `lazy(() => import('volPub/Widget'))`
+- Async bootstrap pattern for proper initialization order
+- Suspense boundaries for loading states
+
+### Testing Strategy:
+
+1. **Unit Tests**: Use Vitest with MSW's node server
+2. **Integration Tests**: Test module federation loading
+3. **E2E Tests**: Playwright tests verify the complete flow including MSW interception
+
+This setup ensures that your MSW mocks work seamlessly across all micro-frontends while maintaining a single source of truth for mock data and handlers.
