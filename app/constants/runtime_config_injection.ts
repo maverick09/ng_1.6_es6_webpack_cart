@@ -1,0 +1,190 @@
+// ============================================
+// METHOD 1: Inject via index.html template
+// ============================================
+
+// public/config.template.js (to be replaced at runtime)
+window.__RUNTIME_CONFIG__ = {
+  environment: '${ENVIRONMENT}',
+  microFrontends: [
+    {
+      name: 'remote1',
+      url: '${REMOTE1_URL}/remoteEntry.js',
+      exposedModule: './App',
+      routePath: '/app1/*',
+    },
+    {
+      name: 'remote2',
+      url: '${REMOTE2_URL}/remoteEntry.js',
+      exposedModule: './Dashboard',
+      routePath: '/app2/*',
+    },
+  ],
+  remotes: {
+    remote1: {
+      url: '${REMOTE1_URL}/remoteEntry.js',
+    },
+    remote2: {
+      url: '${REMOTE2_URL}/remoteEntry.js',
+    },
+  },
+};
+
+// ============================================
+// METHOD 2: Inject via API endpoint
+// ============================================
+
+// public/runtime-config.js (loaded dynamically)
+(async function() {
+  try {
+    const response = await fetch('/api/config');
+    const config = await response.json();
+    window.__RUNTIME_CONFIG__ = config;
+  } catch (error) {
+    console.error('Failed to load runtime config:', error);
+    window.__RUNTIME_CONFIG__ = {
+      environment: 'development',
+      microFrontends: [],
+    };
+  }
+})();
+
+// ============================================
+// METHOD 3: Environment-specific config files
+// ============================================
+
+// public/config.dev.js
+window.__RUNTIME_CONFIG__ = {
+  environment: 'development',
+  apiUrl: 'http://localhost:3000',
+  microFrontends: [
+    {
+      name: 'remote1',
+      url: 'http://localhost:5001/remoteEntry.js',
+      exposedModule: './App',
+      routePath: '/app1/*',
+    },
+  ],
+};
+
+// public/config.prod.js
+window.__RUNTIME_CONFIG__ = {
+  environment: 'production',
+  apiUrl: 'https://api.production.com',
+  microFrontends: [
+    {
+      name: 'remote1',
+      url: 'https://remote1.production.com/remoteEntry.js',
+      exposedModule: './App',
+      routePath: '/app1/*',
+    },
+  ],
+};
+
+// ============================================
+// METHOD 4: Docker/K8s environment variables
+// ============================================
+
+// docker-entrypoint.sh
+#!/bin/sh
+set -e
+
+# Replace environment variables in config file
+envsubst < /usr/share/nginx/html/config.template.js > /usr/share/nginx/html/config.js
+
+# Start nginx
+exec nginx -g 'daemon off;'
+
+// Dockerfile example
+/*
+FROM node:18 AS builder
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
+
+FROM nginx:alpine
+COPY --from=builder /app/dist /usr/share/nginx/html
+COPY nginx.conf /etc/nginx/nginx.conf
+COPY docker-entrypoint.sh /
+RUN chmod +x /docker-entrypoint.sh
+ENTRYPOINT ["/docker-entrypoint.sh"]
+*/
+
+// ============================================
+// METHOD 5: Using in your index.html
+// ============================================
+
+/*
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Host App</title>
+    
+    <!-- Load runtime config before app loads -->
+    <script src="/config.js"></script>
+    <!-- OR load environment-specific config -->
+    <!-- <script src="/config.dev.js"></script> -->
+    <!-- <script src="/config.prod.js"></script> -->
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+*/
+
+// ============================================
+// METHOD 6: TypeScript type definitions
+// ============================================
+
+// src/types/runtime-config.d.ts
+export interface RuntimeConfig {
+  environment: string;
+  apiUrl?: string;
+  microFrontends: Array<{
+    name: string;
+    url: string;
+    exposedModule: string;
+    routePath: string;
+    moduleName?: string;
+    routeData?: any;
+  }>;
+  remotes?: Record<string, { url: string }>;
+}
+
+declare global {
+  interface Window {
+    __RUNTIME_CONFIG__?: RuntimeConfig;
+  }
+}
+
+// ============================================
+// METHOD 7: Build-time .env files (fallback)
+// ============================================
+
+// .env.development
+/*
+VITE_ENVIRONMENT=development
+VITE_REMOTE1_URL=http://localhost:5001
+VITE_REMOTE2_URL=http://localhost:5002
+VITE_CONFIG_URL=http://localhost:3000/api/config
+*/
+
+// .env.production
+/*
+VITE_ENVIRONMENT=production
+VITE_REMOTE1_URL=https://remote1.production.com
+VITE_REMOTE2_URL=https://remote2.production.com
+VITE_CONFIG_URL=https://api.production.com/config
+*/
+
+// .env.staging
+/*
+VITE_ENVIRONMENT=staging
+VITE_REMOTE1_URL=https://remote1.staging.com
+VITE_REMOTE2_URL=https://remote2.staging.com
+VITE_CONFIG_URL=https://api.staging.com/config
+*/
