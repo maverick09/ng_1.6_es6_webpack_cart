@@ -1,3 +1,145 @@
+The error is **still** happening because the problem is deeper than the component loading - it's in **how the federation instance is being shared**.
+
+Looking at the error, it's the same RUNTIME-009. The issue is that `MicrofrontendService` is trying to use the instance, but something is wrong with how the instance is being passed or initialized.
+
+Let me trace through what's likely happening:
+
+## The Real Problem:
+
+Your `main.tsx` creates the instance, but `MicrofrontendService` might not be getting it properly. Let's fix this with a **completely different approach** - don't use a service class at all for now.
+
+## Minimal Working Solution:
+
+```typescript
+// main.tsx - Create instance and export it
+import { StrictMode } from 'react';
+import { createRoot } from 'react-dom/client';
+import { createInstance } from '@module-federation/enhanced/runtime';
+
+// Create and export the instance
+export const federationInstance = createInstance({
+  name: 'shell',
+  remotes: [],
+  shared: {
+    react: {
+      version: '18.2.0',
+      lib: () => import('react'),
+      shareConfig: { singleton: true, requiredVersion: '^18.0.0' },
+    },
+    'react-dom': {
+      version: '18.2.0',
+      lib: () => import('react-dom'),
+      shareConfig: { singleton: true, requiredVersion: '^18.0.0' },
+    },
+  },
+});
+
+// Wait for instance to be ready, then render
+Promise.resolve().then(() => {
+  import('./App').then(({ default: App }) => {
+    createRoot(document.getElementById('root')!).render(
+      <StrictMode>
+        <App />
+      </StrictMode>
+    );
+  });
+});
+```
+
+```typescript
+// Host.tsx - Use the instance directly
+import { useEffect, useState } from 'react';
+import { Routes, Route, useNavigate } from 'react-router-dom';
+import { federationInstance } from '../main';
+
+export function Host() {
+  const [isReady, setIsReady] = useState(false);
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    // Register remote directly with the instance
+    federationInstance
+      .registerRemotes([
+        {
+          name: 'volPub',
+          entry: 'http://localhost:9001/remoteEntry.js',
+          alias: 'volPub',
+          type: 'module',
+        },
+      ])
+      .then(() => {
+        console.log('Remote registered');
+        setIsReady(true);
+      })
+      .catch(err => {
+        console.error('Failed to register:', err);
+      });
+  }, []);
+
+  if (!isReady) {
+    return <div>Initializing micro frontends...</div>;
+  }
+
+  return (
+    <div className="lmn-container">
+      <h3>Welcome to eVolve UI : Shell</h3>
+      
+      <button onClick={() => navigate('/volpub')}>Vol-Pub</button>
+      <button onClick={() => navigate('/profile')}>Profile</button>
+
+      <Routes>
+        <Route path="/volpub" element={<VolPubRoute />} />
+        <Route path="/profile" element={<div>Profile</div>} />
+        <Route path="*" element={<div>Not Found</div>} />
+      </Routes>
+    </div>
+  );
+}
+
+// Component that loads the remote
+function VolPubRoute() {
+  const [Component, setComponent] = useState<any>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    // Load directly from the instance
+    federationInstance
+      .loadRemote<any>('volPub/./VolPubApp')
+      .then(module => {
+        console.log('Module loaded:', module);
+        setComponent(() => module?.default || module);
+      })
+      .catch(err => {
+        console.error('Load error:', err);
+        setError(err.message);
+      });
+  }, []);
+
+  if (error) return <div>Error: {error}</div>;
+  if (!Component) return <div>Loading...</div>;
+
+  return <Component />;
+}
+
+export default Host;
+```
+
+## Why This Should Work:
+
+1. **Direct instance usage** - No service layer to cause issues
+2. **Proper initialization order** - Instance created before anything else
+3. **Simple flow** - Register → Load → Render
+
+If this **still** fails with the same error, then the problem is in your **remote app's vite.config.ts**. The remote might not be building correctly. 
+
+Can you share:
+1. The output when you run `npm run build` in the remote app
+2. Does `http://localhost:9001/remoteEntry.js` return valid JavaScript in your browser?
+
+The persistence of this error suggests the remote isn't properly exposing the module, not that the host is loading it incorrectly.
+
+
+
 You're absolutely right - "works on refresh but not on first load" means the remote IS configured correctly. The issue is a **timing/caching problem**, not a configuration problem.
 
 ## Why It Works on Refresh:
