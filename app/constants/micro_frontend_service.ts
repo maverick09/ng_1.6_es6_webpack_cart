@@ -331,3 +331,182 @@ export class MicroFrontendService {
     }
   }
 }
+
+
+
+
+
+
+
+The user is encountering a Module Federation runtime error: "Please call createInstance first. #RUNTIME-009". They're working with a dynamic remote micro-frontend setup using enhanced-runtime from module federation.
+
+Looking at the error, it says:
+- "React Router caught the following error during render Error: [ Federation Runtime ]: Please call createInstance first. #RUNTIME-009"
+- There's a link to docs: https://module-federation.io/guide/troubleshooting/runtime/RUNTIME-009
+
+The error occurs at:
+- error2 (index.cjs.cjs:24:11)
+- Object.assert2 [as assert] (index.cjs.cjs:13:9)
+- loadShare (index.cjs.cjs:38:17)
+- chunk-JYGLX76M.js:17:39
+- async chunk-JYGLX76M.js:31:1
+
+This is a common issue with Module Federation v2/enhanced-runtime where you need to initialize the federation runtime before loading remotes.
+
+The RUNTIME-009 error typically means that the Module Federation runtime hasn't been properly initialized before trying to load shared modules or remotes.
+
+The solution usually involves:
+1. Calling `init()` before loading remotes
+2. Using `createInstance()` properly in the host application
+3. Making sure the runtime is initialized before any dynamic remote loading
+
+Let me provide a comprehensive solution for this issue.
+
+Looking at your error, this is a **Module Federation Runtime-009** error that occurs when trying to load remotes before the Federation runtime instance is properly initialized.
+
+Here's how to fix it:
+
+## Solution: Proper Runtime Initialization
+
+### 1. **Initialize Federation Instance Early**
+
+In your **host application entry point** (before React renders), create and initialize the federation instance:
+
+```typescript
+// index.ts or main.ts (BEFORE ReactDOM.render)
+import { init } from '@module-federation/enhanced/runtime';
+
+// Initialize the federation runtime FIRST
+init({
+  name: 'host',
+  remotes: [
+    // Static remotes (if any)
+  ],
+  shared: {
+    react: {
+      singleton: true,
+      requiredVersion: '^18.0.0',
+    },
+    'react-dom': {
+      singleton: true,
+      requiredVersion: '^18.0.0',
+    },
+  },
+});
+
+// THEN render your React app
+import('./bootstrap');
+```
+
+### 2. **For Dynamic Remotes Service**
+
+Create a proper service that ensures initialization:
+
+```typescript
+// microfrontend.service.ts
+import { loadRemote, registerRemotes, getInstance } from '@module-federation/enhanced/runtime';
+
+class MicrofrontendService {
+  private initialized = false;
+
+  async ensureInitialized() {
+    if (!this.initialized) {
+      // Get the existing instance (created in index.ts)
+      const instance = getInstance();
+      if (!instance) {
+        throw new Error('Federation instance not initialized');
+      }
+      this.initialized = true;
+    }
+  }
+
+  async registerRemote(name: string, entry: string) {
+    await this.ensureInitialized();
+    
+    registerRemotes([
+      {
+        name,
+        entry,
+      },
+    ]);
+  }
+
+  async loadRemote<T = any>(remoteName: string, modulePath: string): Promise<T> {
+    await this.ensureInitialized();
+    
+    return loadRemote<T>(`${remoteName}/${modulePath}`);
+  }
+}
+
+export const microfrontendService = new MicrofrontendService();
+```
+
+### 3. **Use in Components**
+
+```typescript
+// App.tsx or your route component
+import { useEffect, useState } from 'react';
+import { microfrontendService } from './services/microfrontend.service';
+
+function DynamicRemoteComponent() {
+  const [RemoteComponent, setRemoteComponent] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
+
+  useEffect(() => {
+    const loadComponent = async () => {
+      try {
+        // Register the remote first
+        await microfrontendService.registerRemote(
+          'myRemote',
+          'http://localhost:3001/remoteEntry.js'
+        );
+
+        // Then load the component
+        const module = await microfrontendService.loadRemote(
+          'myRemote',
+          './Component'
+        );
+        
+        setRemoteComponent(() => module.default || module);
+      } catch (err) {
+        setError(err as Error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadComponent();
+  }, []);
+
+  if (loading) return <div>Loading...</div>;
+  if (error) return <div>Error: {error.message}</div>;
+  if (!RemoteComponent) return null;
+
+  return <RemoteComponent />;
+}
+```
+
+### 4. **Alternative: Use Suspense Boundary**
+
+Wrap your dynamic components with proper error boundaries:
+
+```typescript
+import { ErrorBoundary } from 'react-error-boundary';
+
+<ErrorBoundary
+  fallback={<div>Failed to load remote component</div>}
+  onError={(error) => console.error('Remote loading error:', error)}
+>
+  <DynamicRemoteComponent />
+</ErrorBoundary>
+```
+
+## Key Points:
+
+1. **Always call `init()` BEFORE React renders** - this is the most common cause
+2. **Use `getInstance()` to check if runtime is initialized**
+3. **Register remotes before loading them**
+4. **Add proper error handling** for dynamic imports
+
+This should resolve your RUNTIME-009 error! The critical part is ensuring `init()` is called before any module federation operations occur.
