@@ -1,3 +1,129 @@
+Looking at your error, the problem is clear: **the `lazy()` call is happening at module load time, which triggers the remote load BEFORE the federation instance is ready.**
+
+The error shows it's happening in the `lazy` call in your routing setup. The issue is this pattern:
+
+```typescript
+// ❌ This executes immediately when the module loads
+const VolPubApp = lazy(() => 
+  MicrofrontendService.loadRemoteModule('volPub', './VolPubApp')
+    .then(module => ({ default: module.default || module }))
+);
+```
+
+## Working Solution - Don't Use `lazy()` with Dynamic Federation:
+
+```typescript
+// Host.tsx
+import { useEffect, useState } from 'react';
+import { Routes, Route, useNavigate } from 'react-router-dom';
+import { MicrofrontendService } from './services/MicrofrontendService';
+
+export function Host() {
+  const [isInitialized, setIsInitialized] = useState(false);
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    // Preload remotes on mount
+    MicrofrontendService.registerRemote({
+      name: 'volPub',
+      url: 'http://localhost:9001/remoteEntry.js',
+      exposedModule: './VolPubApp',
+      moduleName: 'default',
+      routePath: '/volpub/*',
+    })
+    .then(() => {
+      console.log('Remote registered successfully');
+      setIsInitialized(true);
+    })
+    .catch(err => {
+      console.error('Failed to register remote:', err);
+    });
+  }, []);
+
+  if (!isInitialized) {
+    return <div>Initializing micro frontends...</div>;
+  }
+
+  return (
+    <div>
+      <div className="lmn-container">
+        <h3>Welcome to eVolve UI : Shell</h3>
+        <h6>Shell app container for new FX Options UI application</h6>
+
+        <button onClick={() => navigate('/volpub')}>Vol-Pub</button>
+        <button onClick={() => navigate('/profile')}>Profile</button>
+
+        <Routes>
+          <Route path="/volpub" element={<VolPubRoute />} />
+          <Route path="/profile" element={<div>Profile</div>} />
+          <Route path="*" element={<div>Not Found</div>} />
+        </Routes>
+      </div>
+    </div>
+  );
+}
+
+// Separate route component that loads the remote
+function VolPubRoute() {
+  const [Component, setComponent] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+
+    MicrofrontendService.loadRemoteModule('volPub', './VolPubApp')
+      .then(module => {
+        if (mounted) {
+          console.log('Module loaded:', module);
+          setComponent(() => module.default || module);
+          setLoading(false);
+        }
+      })
+      .catch(err => {
+        if (mounted) {
+          console.error('Failed to load module:', err);
+          setError(err.message);
+          setLoading(false);
+        }
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  if (loading) return <div>Loading VolPub component...</div>;
+  if (error) return <div>Error: {error}</div>;
+  if (!Component) return <div>Component not found</div>;
+
+  return <Component />;
+}
+
+export default Host;
+```
+
+## Key Points:
+
+1. **No `lazy()`** - It triggers module loading at the wrong time
+2. **Register THEN load** - Always register the remote before trying to load modules from it
+3. **Component state** - Load the component in useEffect, not at module level
+4. **Wait for initialization** - Don't render routes until registration completes
+
+The "works on refresh" behavior happens because after the first load, the remoteEntry.js is cached. On initial load, it's a race between your federation instance being ready and the remote trying to load.
+
+This approach ensures everything happens in the right order:
+1. Host creates federation instance (main.tsx)
+2. Host registers remote (Host.tsx useEffect)
+3. User navigates to route
+4. Route component loads module (VolPubRoute useEffect)
+5. Component renders
+
+Try this and the error should disappear on first load.
+
+
+888888
+
 Looking at your setup, I can see the issue. You're using **Module Federation Enhanced Runtime for dynamic loading**, but your **remote app isn't properly configured** to be consumed at runtime. The React singleton error persists because the remote is bundling its own React.
 
 ## The Real Problem:
