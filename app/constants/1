@@ -1,0 +1,118 @@
+The error persists because there's still a timing issue. Let me try one more approach - **preload the remote script tag** before any React code runs.
+
+## Nuclear Option - Script Preloading:
+
+Add this to your **host's index.html** BEFORE any other scripts:
+
+```html
+<!-- host/index.html -->
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>eVolve Shell</title>
+    
+    <!-- Preload remote BEFORE anything else -->
+    <script>
+      (function() {
+        const script = document.createElement('script');
+        script.type = 'module';
+        script.src = 'http://localhost:9001/remoteEntry.js';
+        script.async = false; // Critical: synchronous loading
+        document.head.appendChild(script);
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+```
+
+Then simplify your Host.tsx even more:
+
+```typescript
+// Host.tsx
+import { useEffect, useState } from 'react';
+import { Routes, Route, useNavigate } from 'react-router-dom';
+import { federationInstance } from '../main';
+
+export function Host() {
+  const [isReady, setIsReady] = useState(false);
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    // Add delay to ensure remoteEntry.js is loaded
+    const timer = setTimeout(() => {
+      federationInstance
+        .registerRemotes([
+          {
+            name: 'volPub',
+            entry: 'http://localhost:9001/remoteEntry.js',
+          },
+        ])
+        .then(() => {
+          console.log('✅ Remote registered');
+          setIsReady(true);
+        })
+        .catch(err => {
+          console.error('❌ Registration failed:', err);
+        });
+    }, 500); // 500ms delay
+
+    return () => clearTimeout(timer);
+  }, []);
+
+  if (!isReady) {
+    return <div>Initializing...</div>;
+  }
+
+  return (
+    <div className="lmn-container">
+      <h3>Welcome to eVolve UI : Shell</h3>
+      
+      <button onClick={() => navigate('/volpub')}>Vol-Pub</button>
+      
+      <Routes>
+        <Route path="/volpub" element={<VolPubRoute />} />
+        <Route path="*" element={<div>Not Found</div>} />
+      </Routes>
+    </div>
+  );
+}
+
+function VolPubRoute() {
+  const [Component, setComponent] = useState<any>(null);
+
+  useEffect(() => {
+    federationInstance
+      .loadRemote('volPub/./VolPubApp')
+      .then(module => {
+        console.log('✅ Module loaded');
+        setComponent(() => module?.default || module);
+      })
+      .catch(err => {
+        console.error('❌ Load failed:', err);
+      });
+  }, []);
+
+  if (!Component) return <div>Loading...</div>;
+  return <Component />;
+}
+
+export default Host;
+```
+
+The 500ms delay + script preloading should eliminate the race condition.
+
+If this **still** fails, the issue is likely in the version mismatch between your host and remote's Module Federation setup. What versions are you using?
+
+```bash
+# Check in both host and remote
+npm list @module-federation/enhanced @module-federation/vite
+```
+
+They need to be the same version.
