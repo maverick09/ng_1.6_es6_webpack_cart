@@ -1,0 +1,123 @@
+The error is **still happening at `host.tsx:89`**, which means the problem is occurring **even earlier** - likely during the initial render of the Host component itself, before your `useEffect` even runs.
+
+Looking at the stack trace, the error is happening during React's render phase, which suggests something in your component tree is trying to use Module Federation **synchronously during render**.
+
+## The Culprit: Initial Route Matching
+
+React Router is matching routes **immediately on mount**, even before your `useEffect` runs. If the URL is already `/volpub` when the page loads, React Router tries to render `<VolPubRoute />` instantly.
+
+## Solution: Check Initial Path and Redirect
+
+```typescript
+// Host.tsx
+import { useEffect, useState } from 'react';
+import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
+import { federationInstance } from '../main';
+
+export function Host() {
+  const [isReady, setIsReady] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const navigate = useNavigate();
+  const location = useLocation();
+  const [initialPath] = useState(location.pathname); // Capture initial path
+
+  useEffect(() => {
+    const register = async () => {
+      try {
+        console.log('⏳ Starting registration...');
+        
+        // If user landed directly on /volpub, navigate away first
+        if (initialPath.startsWith('/volpub')) {
+          navigate('/', { replace: true });
+        }
+        
+        await federationInstance.registerRemotes([
+          {
+            name: 'volPub',
+            entry: 'http://localhost:9001/remoteEntry.js',
+          },
+        ]);
+        
+        console.log('✅ Registration complete');
+        
+        // Wait for registration to settle
+        await new Promise(resolve => setTimeout(resolve, 300));
+        
+        setIsReady(true);
+        
+        // Now navigate back to the intended path
+        if (initialPath.startsWith('/volpub')) {
+          navigate(initialPath, { replace: true });
+        }
+      } catch (err) {
+        console.error('❌ Registration failed:', err);
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    };
+
+    register();
+  }, []); // Empty deps - only run once
+
+  if (error) {
+    return <div>Error: {error} <button onClick={() => window.location.reload()}>Retry</button></div>;
+  }
+
+  if (!isReady) {
+    return (
+      <div className="lmn-container">
+        <h3>Welcome to eVolve UI : Shell</h3>
+        <p>Initializing...</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="lmn-container">
+      <h3>Welcome to eVolve UI : Shell</h3>
+      
+      <button onClick={() => navigate('/volpub')}>Vol-Pub</button>
+      <button onClick={() => navigate('/profile')}>Profile</button>
+
+      <Routes>
+        <Route path="/" element={<div>Home</div>} />
+        <Route path="/volpub" element={<VolPubRoute />} />
+        <Route path="/profile" element={<div>Profile</div>} />
+        <Route path="*" element={<div>Not Found</div>} />
+      </Routes>
+    </div>
+  );
+}
+
+function VolPubRoute() {
+  const [Component, setComponent] = useState<any>(null);
+
+  useEffect(() => {
+    console.log('⏳ Loading VolPub module...');
+    
+    federationInstance
+      .loadRemote('volPub/./VolPubApp')
+      .then(module => {
+        console.log('✅ VolPub loaded');
+        setComponent(() => module?.default || module);
+      })
+      .catch(err => {
+        console.error('❌ VolPub load failed:', err);
+      });
+  }, []);
+
+  if (!Component) return <div>Loading VolPub...</div>;
+  return <Component />;
+}
+
+export default Host;
+```
+
+This approach:
+1. Captures the initial URL path
+2. If it's `/volpub`, temporarily navigates to `/` 
+3. Registers the remote
+4. Once ready, navigates back to `/volpub`
+
+This prevents React Router from trying to render `VolPubRoute` before registration completes.
+
+**If this still fails**, the problem is in how your `main.tsx` or `App.tsx` is structured. Can you share your complete `main.tsx` and the file that renders `<Host />`?
