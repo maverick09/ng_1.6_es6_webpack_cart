@@ -1,3 +1,64 @@
+You're absolutely right - "works on refresh but not on first load" means the remote IS configured correctly. The issue is a **timing/caching problem**, not a configuration problem.
+
+## Why It Works on Refresh:
+
+1. **First load**: Browser fetches `remoteEntry.js`, parses it, federation runtime initializes → **race condition**
+2. **Refresh**: Browser has `remoteEntry.js` cached (or partially loaded), everything is faster → **no race**
+
+This is a classic **cold start vs warm start** issue with Module Federation.
+
+## Try the Simple Approach First:
+
+Use the code I provided above (direct instance usage, no service layer). This eliminates any potential issues with how the service is managing the instance.
+
+## If That Still Fails, Add This to Remote's vite.config.ts:
+
+```typescript
+// Remote: vite.config.ts
+export default defineConfig({
+  plugins: [
+    react(),
+    federation({
+      name: 'volPub',
+      filename: 'remoteEntry.js',
+      exposes: {
+        './VolPubApp': './src/volPubApp/volPubApp.tsx',
+      },
+      shared: {
+        react: { singleton: true, requiredVersion: '^18.0.0' },
+        'react-dom': { singleton: true, requiredVersion: '^18.0.0' },
+      },
+      // Add this to force synchronous chunk loading
+      runtimePlugins: [],
+    }),
+  ],
+  build: {
+    target: 'esnext',
+    minify: false, // Disable for debugging
+    rollupOptions: {
+      output: {
+        format: 'es',
+        // Ensure consistent chunk naming
+        manualChunks: undefined,
+      },
+    },
+  },
+  server: {
+    port: 9001,
+    // Add these headers
+    headers: {
+      'Cache-Control': 'no-cache',
+    },
+  },
+});
+```
+
+The `Cache-Control: no-cache` header might help debug if it's truly a caching issue.
+
+Try the simplified host code first and let me know if the error persists on first load.
+
+
+
 Looking at your error, the problem is clear: **the `lazy()` call is happening at module load time, which triggers the remote load BEFORE the federation instance is ready.**
 
 The error shows it's happening in the `lazy` call in your routing setup. The issue is this pattern:
