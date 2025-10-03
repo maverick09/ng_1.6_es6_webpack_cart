@@ -1,0 +1,46 @@
+// Host.tsx - Better approach with Suspense
+import { Suspense, lazy, useEffect, useState } from 'react';
+import { Routes, Route } from 'react-router-dom';
+import { MicrofrontendService } from './services/MicrofrontendService';
+
+// Preload function
+async function preloadRemotes() {
+  await MicrofrontendService.registerRemote({
+    name: 'volPub',
+    url: 'http://localhost:9001/remoteEntry.js',
+    exposedModule: './VolPubApp',
+    moduleName: 'default',
+    routePath: '/volpub/*',
+  });
+}
+
+// Create lazy component AFTER preload
+const VolPubApp = lazy(() => 
+  MicrofrontendService.loadRemoteModule('volPub', './VolPubApp')
+    .then(module => ({ default: module.default || module }))
+);
+
+export function Host() {
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    preloadRemotes()
+      .then(() => setReady(true))
+      .catch(console.error);
+  }, []);
+
+  if (!ready) return <div>Loading...</div>;
+
+  return (
+    <div>
+      <h3>Welcome to eVolve UI : Shell</h3>
+      
+      <Suspense fallback={<div>Loading app...</div>}>
+        <Routes>
+          <Route path="/volpub/*" element={<VolPubApp />} />
+          <Route path="*" element={<div>Not Found</div>} />
+        </Routes>
+      </Suspense>
+    </div>
+  );
+}
