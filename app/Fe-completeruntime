@@ -1,0 +1,322 @@
+# COMPLETE WORKING EXAMPLE - Module Federation with Dynamic Remotes
+
+## File Structure
+```
+host-app/
+├── public/
+│   └── config.js                    # Runtime config (loaded before app)
+├── src/
+│   ├── services/
+│   │   └── MicroFrontendService.ts # Service for loading remotes
+│   ├── federation-runtime.ts       # Runtime plugin
+│   ├── App.tsx                     # Main app component
+│   ├── main.tsx                    # Entry point
+│   └── index.css
+├── vite.config.ts                  # Vite + Federation config
+├── index.html                      # HTML entry
+└── package.json
+```
+
+## 1. public/config.js
+```javascript
+// This file is loaded BEFORE React
+// Can be replaced at deployment time
+window.__RUNTIME_CONFIG__ = {
+  environment: 'development',
+  apiUrl: 'http://localhost:3000',
+  remotes: {
+    remote1: {
+      url: 'http://localhost:5001/remoteEntry.js'
+    },
+    remote2: {
+      url: 'http://localhost:5002/remoteEntry.js'
+    }
+  },
+  microFrontends: [
+    {
+      name: 'remote1',
+      url: 'http://localhost:5001/remoteEntry.js',
+      exposedModule: './App',
+      routePath: '/app1/*',
+      moduleName: 'default'
+    },
+    {
+      name: 'remote2',
+      url: 'http://localhost:5002/remoteEntry.js',
+      exposedModule: './Dashboard',
+      routePath: '/app2/*',
+      moduleName: 'Dashboard'
+    }
+  ]
+};
+```
+
+## 2. index.html
+```html
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Host App - Module Federation</title>
+    
+    <!-- CRITICAL: Load config BEFORE main.tsx -->
+    <script src="/config.js"></script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+```
+
+## 3. vite.config.ts
+```typescript
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
+import { federation } from '@module-federation/vite';
+
+export default defineConfig({
+  plugins: [
+    react(),
+    federation({
+      name: 'host',
+      remotes: {}, // Will be populated by runtime plugin
+      shared: {
+        react: {
+          singleton: true,
+          requiredVersion: '^18.0.0',
+        },
+        'react-dom': {
+          singleton: true,
+          requiredVersion: '^18.0.0',
+        },
+        'react-router-dom': {
+          singleton: true,
+        },
+      },
+      runtimePlugins: ['./src/federation-runtime.ts'],
+    }),
+  ],
+  server: {
+    port: 5000,
+    strictPort: true,
+    cors: true,
+  },
+  build: {
+    target: 'esnext',
+    minify: false,
+    cssCodeSplit: false,
+  },
+});
+```
+
+## 4. src/federation-runtime.ts
+```typescript
+import type { FederationRuntimePlugin } from '@module-federation/enhanced/runtime';
+
+const runtimePlugin: () => FederationRuntimePlugin = function () {
+  return {
+    name: 'dynamic-remote-runtime-plugin',
+    beforeInit(args) {
+      const runtimeConfig = window.__RUNTIME_CONFIG__;
+      
+      if (!runtimeConfig?.remotes) {
+        console.warn('No runtime config found');
+        return args;
+      }
+
+      const dynamicRemotes = Object.entries(runtimeConfig.remotes).map(
+        ([name, config]: [string, any]) => ({
+          name,
+          entry: config.url,
+          alias: name,
+        })
+      );
+
+      console.log('Loading remotes:', dynamicRemotes);
+
+      return {
+        ...args,
+        options: {
+          ...args.options,
+          remotes: [...(args.options.remotes || []), ...dynamicRemotes],
+        },
+      };
+    },
+  };
+};
+
+export default runtimePlugin;
+```
+
+## 5. src/main.tsx (SIMPLE VERSION - Recommended)
+```typescript
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+import App from './App';
+import './index.css';
+
+// No manual init needed - runtime plugin handles it!
+ReactDOM.createRoot(document.getElementById('root')!).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+);
+```
+
+## 6. src/App.tsx (SIMPLIFIED)
+```typescript
+import { lazy, Suspense } from 'react';
+import { createBrowserRouter, RouterProvider } from 'react-router-dom';
+import { loadRemote } from '@module-federation/enhanced/runtime';
+
+// Create lazy components directly
+const Remote1App = lazy(() => 
+  loadRemote<any>('remote1/App').then(m => ({ default: m.default || m }))
+);
+
+const Remote2Dashboard = lazy(() => 
+  loadRemote<any>('remote2/Dashboard').then(m => ({ default: m.Dashboard || m.default || m }))
+);
+
+const router = createBrowserRouter([
+  {
+    path: '/',
+    element: <Home />,
+  },
+  {
+    path: '/app1/*',
+    element: <ErrorBoundary><Remote1App /></ErrorBoundary>,
+  },
+  {
+    path: '/app2/*',
+    element: <ErrorBoundary><Remote2Dashboard /></ErrorBoundary>,
+  },
+]);
+
+function App() {
+  return (
+    <Suspense fallback={<div>Loading...</div>}>
+      <RouterProvider router={router} />
+    </Suspense>
+  );
+}
+
+function Home() {
+  return (
+    <div style={{ padding: '40px' }}>
+      <h1>Host Application</h1>
+      <nav>
+        <a href="/app1">Remote App 1</a> | <a href="/app2">Remote App 2</a>
+      </nav>
+    </div>
+  );
+}
+
+// Simple error boundary
+class ErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { hasError: boolean; error?: Error }
+> {
+  constructor(props: any) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ padding: '20px', border: '2px solid red' }}>
+          <h3>Failed to load remote</h3>
+          <p>{this.state.error?.message}</p>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+export default App;
+```
+
+## 7. package.json
+```json
+{
+  "name": "host-app",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@module-federation/enhanced": "^0.6.5",
+    "@module-federation/vite": "^1.0.8",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.26.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "typescript": "^5.5.3",
+    "vite": "^5.4.0"
+  }
+}
+```
+
+## 8. TypeScript types (optional)
+```typescript
+// src/types/global.d.ts
+export interface RuntimeConfig {
+  environment: string;
+  apiUrl?: string;
+  remotes?: Record<string, { url: string }>;
+  microFrontends?: Array<{
+    name: string;
+    url: string;
+    exposedModule: string;
+    routePath: string;
+    moduleName?: string;
+  }>;
+}
+
+declare global {
+  interface Window {
+    __RUNTIME_CONFIG__?: RuntimeConfig;
+  }
+}
+```
+
+## Run Instructions
+
+```bash
+# Install dependencies
+npm install
+
+# Start host app
+npm run dev
+
+# In separate terminals, start your remote apps
+cd ../remote1 && npm run dev
+cd ../remote2 && npm run dev
+
+# Open http://localhost:5000
+```
+
+## Key Points
+
+1. ✅ **config.js** loads BEFORE React
+2. ✅ **Runtime plugin** reads config and registers remotes
+3. ✅ **No manual init()** needed - plugin handles it
+4. ✅ **loadRemote()** works because plugin initialized everything
+5. ✅ **Error boundaries** catch loading failures
+
+This is the SIMPLEST working setup!
