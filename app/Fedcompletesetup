@@ -1,0 +1,746 @@
+I'll create a complete, production-ready setup for runtime Module Federation configuration using `window.__RUNTIME__` approach.
+
+## Complete Runtime Module Federation Setup
+
+### 1. Shell App Structure
+
+```
+shell/
+├── .env.local
+├── .env.production
+├── public/
+│   └── runtime-config.js
+├── src/
+│   ├── config/
+│   │   ├── microFrontendConfig.ts
+│   │   └── runtimeConfig.ts
+│   ├── plugins/
+│   │   └── runtimePlugin.ts
+│   ├── App.tsx
+│   ├── main.tsx
+│   └── bootstrap.tsx
+├── vite.config.ts
+└── module-federation.config.ts
+```
+
+### 2. Environment Files
+
+**`.env.local`**
+```env
+VITE_REMOTE_PRODUCT_URL=http://localhost:3001
+VITE_REMOTE_CART_URL=http://localhost:3002
+VITE_REMOTE_USER_URL=http://localhost:3003
+VITE_ENVIRONMENT=local
+```
+
+**`.env.production`**
+```env
+VITE_REMOTE_PRODUCT_URL=https://product.yourdomain.com
+VITE_REMOTE_CART_URL=https://cart.yourdomain.com
+VITE_REMOTE_USER_URL=https://user.yourdomain.com
+VITE_ENVIRONMENT=production
+```
+
+### 3. Generate Runtime Config Script
+
+**`scripts/generate-runtime-config.js`**
+```javascript
+#!/usr/bin/env node
+
+const fs = require('fs');
+const path = require('path');
+
+// Read environment variables
+const config = {
+  remotes: {
+    product: process.env.VITE_REMOTE_PRODUCT_URL,
+    cart: process.env.VITE_REMOTE_CART_URL,
+    user: process.env.VITE_REMOTE_USER_URL,
+  },
+  environment: process.env.VITE_ENVIRONMENT || 'local',
+};
+
+// Generate the runtime config file
+const configContent = `
+// Auto-generated runtime configuration
+// DO NOT EDIT MANUALLY
+window.__RUNTIME__ = ${JSON.stringify(config, null, 2)};
+`;
+
+// Write to public directory
+const outputPath = path.join(__dirname, '../public/runtime-config.js');
+fs.writeFileSync(outputPath, configContent, 'utf-8');
+
+console.log('✅ Runtime config generated:', outputPath);
+console.log('Configuration:', JSON.stringify(config, null, 2));
+```
+
+### 4. Runtime Config TypeScript Definition
+
+**`src/config/runtimeConfig.ts`**
+```typescript
+export interface RemoteConfig {
+  url: string;
+  scope: string;
+  module: string;
+  entry: string;
+}
+
+export interface MicroFrontendRoute {
+  path: string;
+  title: string;
+  remote: string;
+  module: string;
+  exact?: boolean;
+  meta?: {
+    requiresAuth?: boolean;
+    roles?: string[];
+    [key: string]: any;
+  };
+}
+
+export interface RuntimeConfig {
+  remotes: {
+    [key: string]: string;
+  };
+  environment: string;
+}
+
+declare global {
+  interface Window {
+    __RUNTIME__: RuntimeConfig;
+  }
+}
+
+export const getRuntimeConfig = (): RuntimeConfig => {
+  if (!window.__RUNTIME__) {
+    console.error('Runtime configuration not found!');
+    return {
+      remotes: {},
+      environment: 'development',
+    };
+  }
+  return window.__RUNTIME__;
+};
+
+export const getRemoteUrl = (remoteName: string): string => {
+  const config = getRuntimeConfig();
+  const url = config.remotes[remoteName];
+  
+  if (!url) {
+    console.error(`Remote "${remoteName}" not found in runtime configuration`);
+    return '';
+  }
+  
+  return url;
+};
+
+export const getRemoteEntry = (remoteName: string): string => {
+  const baseUrl = getRemoteUrl(remoteName);
+  return baseUrl ? `${baseUrl}/remoteEntry.js` : '';
+};
+```
+
+### 5. Micro Frontend Configuration
+
+**`src/config/microFrontendConfig.ts`**
+```typescript
+import { MicroFrontendRoute } from './runtimeConfig';
+
+export interface MicroFrontendConfig {
+  name: string;
+  routes: MicroFrontendRoute[];
+  errorBoundary?: boolean;
+  fallback?: React.ComponentType;
+}
+
+export const microFrontendConfig: MicroFrontendConfig[] = [
+  {
+    name: 'product',
+    routes: [
+      {
+        path: '/products',
+        title: 'Products',
+        remote: 'product',
+        module: './ProductList',
+        exact: true,
+        meta: {
+          requiresAuth: false,
+        },
+      },
+      {
+        path: '/products/:id',
+        title: 'Product Details',
+        remote: 'product',
+        module: './ProductDetail',
+        meta: {
+          requiresAuth: false,
+        },
+      },
+    ],
+    errorBoundary: true,
+  },
+  {
+    name: 'cart',
+    routes: [
+      {
+        path: '/cart',
+        title: 'Shopping Cart',
+        remote: 'cart',
+        module: './Cart',
+        exact: true,
+        meta: {
+          requiresAuth: true,
+        },
+      },
+      {
+        path: '/checkout',
+        title: 'Checkout',
+        remote: 'cart',
+        module: './Checkout',
+        meta: {
+          requiresAuth: true,
+        },
+      },
+    ],
+    errorBoundary: true,
+  },
+  {
+    name: 'user',
+    routes: [
+      {
+        path: '/profile',
+        title: 'User Profile',
+        remote: 'user',
+        module: './Profile',
+        exact: true,
+        meta: {
+          requiresAuth: true,
+          roles: ['user', 'admin'],
+        },
+      },
+      {
+        path: '/settings',
+        title: 'Settings',
+        remote: 'user',
+        module: './Settings',
+        meta: {
+          requiresAuth: true,
+        },
+      },
+    ],
+    errorBoundary: true,
+  },
+];
+
+export const getAllRoutes = (): MicroFrontendRoute[] => {
+  return microFrontendConfig.flatMap(config => config.routes);
+};
+
+export const getRoutesByRemote = (remoteName: string): MicroFrontendRoute[] => {
+  const config = microFrontendConfig.find(c => c.name === remoteName);
+  return config?.routes || [];
+};
+```
+
+### 6. Runtime Plugin
+
+**`src/plugins/runtimePlugin.ts`**
+```typescript
+import type { FederationRuntimePlugin } from '@module-federation/runtime/types';
+import { getRemoteUrl } from '../config/runtimeConfig';
+
+export const runtimePlugin: () => FederationRuntimePlugin = () => ({
+  name: 'runtime-config-plugin',
+  
+  beforeInit(args) {
+    console.log('🔧 Runtime Plugin: beforeInit', args);
+    return args;
+  },
+
+  beforeRequest(args) {
+    console.log('🔧 Runtime Plugin: beforeRequest', args);
+    return args;
+  },
+
+  afterResolve(args) {
+    console.log('🔧 Runtime Plugin: afterResolve', args);
+    
+    // Override remote URLs with runtime configuration
+    if (args.pkgNameOrAlias && args.remote) {
+      const runtimeUrl = getRemoteUrl(args.pkgNameOrAlias);
+      
+      if (runtimeUrl) {
+        console.log(`🔄 Overriding ${args.pkgNameOrAlias} URL to ${runtimeUrl}`);
+        
+        return {
+          ...args,
+          remote: {
+            ...args.remote,
+            entry: `${runtimeUrl}/remoteEntry.js`,
+          },
+        };
+      }
+    }
+    
+    return args;
+  },
+
+  errorLoadRemote(args) {
+    console.error('❌ Runtime Plugin: errorLoadRemote', args);
+    
+    const { id, error } = args;
+    console.error(`Failed to load remote: ${id}`, error);
+    
+    // You can implement retry logic here
+    return args;
+  },
+
+  beforeLoadShare(args) {
+    console.log('🔧 Runtime Plugin: beforeLoadShare', args);
+    return args;
+  },
+});
+```
+
+### 7. Shell Module Federation Config
+
+**`module-federation.config.ts`**
+```typescript
+import { getRemoteEntry } from './src/config/runtimeConfig';
+
+export default {
+  name: 'shell',
+  
+  // These are placeholder URLs - will be overridden by runtime plugin
+  remotes: {
+    product: {
+      entry: 'http://localhost:3001/remoteEntry.js',
+      type: 'module',
+    },
+    cart: {
+      entry: 'http://localhost:3002/remoteEntry.js', 
+      type: 'module',
+    },
+    user: {
+      entry: 'http://localhost:3003/remoteEntry.js',
+      type: 'module',
+    },
+  },
+
+  shared: {
+    react: {
+      singleton: true,
+      requiredVersion: '^18.3.1',
+      eager: true,
+    },
+    'react-dom': {
+      singleton: true,
+      requiredVersion: '^18.3.1',
+      eager: true,
+    },
+    'react-router-dom': {
+      singleton: true,
+      requiredVersion: '^6.22.0',
+    },
+    // Add other shared dependencies
+  },
+};
+```
+
+### 8. Shell Vite Config
+
+**`vite.config.ts`**
+```typescript
+import { defineConfig, loadEnv } from 'vite';
+import react from '@vitejs/plugin-react';
+import { federation } from '@module-federation/vite';
+import topLevelAwait from 'vite-plugin-top-level-await';
+import moduleFederationConfig from './module-federation.config';
+
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, process.cwd(), '');
+  
+  return {
+    plugins: [
+      react(),
+      federation({
+        ...moduleFederationConfig,
+        runtimePlugins: ['./src/plugins/runtimePlugin.ts'],
+      }),
+      topLevelAwait(),
+    ],
+    
+    build: {
+      target: 'esnext',
+      minify: false,
+      cssCodeSplit: false,
+    },
+
+    server: {
+      port: 3000,
+      strictPort: true,
+      cors: true,
+    },
+
+    preview: {
+      port: 3000,
+    },
+  };
+});
+```
+
+### 9. Shell Main Entry
+
+**`src/main.tsx`**
+```typescript
+import './bootstrap';
+```
+
+**`src/bootstrap.tsx`**
+```typescript
+import { StrictMode } from 'react';
+import { createRoot } from 'react-dom/client';
+import { init } from '@module-federation/runtime';
+import { runtimePlugin } from './plugins/runtimePlugin';
+import App from './App';
+import './index.css';
+
+// Initialize Module Federation with runtime plugin
+init({
+  name: 'shell',
+  remotes: [], // Will be populated by runtime config
+  plugins: [runtimePlugin()],
+});
+
+const root = createRoot(document.getElementById('root')!);
+
+root.render(
+  <StrictMode>
+    <App />
+  </StrictMode>
+);
+```
+
+### 10. Shell App Component
+
+**`src/App.tsx`**
+```typescript
+import { Suspense, lazy, useEffect, useState } from 'react';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { loadRemote } from '@module-federation/runtime';
+import { microFrontendConfig, MicroFrontendRoute } from './config/microFrontendConfig';
+import { getRuntimeConfig } from './config/runtimeConfig';
+
+// Error Boundary Component
+class ErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { hasError: boolean; error?: Error }
+> {
+  constructor(props: any) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ padding: '20px', textAlign: 'center' }}>
+          <h2>Something went wrong loading this module</h2>
+          <p>{this.state.error?.message}</p>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
+// Loading Fallback
+const LoadingFallback = () => (
+  <div style={{ padding: '20px', textAlign: 'center' }}>
+    <p>Loading module...</p>
+  </div>
+);
+
+// Dynamic Remote Component Loader
+const loadRemoteComponent = (remote: string, module: string) => {
+  return lazy(async () => {
+    try {
+      console.log(`📦 Loading remote: ${remote}/${module}`);
+      const component = await loadRemote<{ default: React.ComponentType }>(`${remote}/${module}`);
+      return { default: component.default };
+    } catch (error) {
+      console.error(`Failed to load ${remote}/${module}:`, error);
+      throw error;
+    }
+  });
+};
+
+function App() {
+  const [configLoaded, setConfigLoaded] = useState(false);
+
+  useEffect(() => {
+    // Verify runtime config is loaded
+    const config = getRuntimeConfig();
+    console.log('🚀 Runtime Configuration:', config);
+    setConfigLoaded(true);
+    
+    // Set page title
+    document.title = 'Shell App';
+  }, []);
+
+  if (!configLoaded) {
+    return <LoadingFallback />;
+  }
+
+  return (
+    <BrowserRouter>
+      <div className="app">
+        <header className="app-header">
+          <h1>Micro Frontend Shell</h1>
+          <nav>
+            <a href="/products">Products</a>
+            <a href="/cart">Cart</a>
+            <a href="/profile">Profile</a>
+          </nav>
+        </header>
+
+        <main className="app-main">
+          <Routes>
+            <Route path="/" element={<Navigate to="/products" replace />} />
+            
+            {microFrontendConfig.map(config => 
+              config.routes.map((route: MicroFrontendRoute) => {
+                const Component = loadRemoteComponent(route.remote, route.module);
+                
+                return (
+                  <Route
+                    key={route.path}
+                    path={route.path}
+                    element={
+                      <ErrorBoundary>
+                        <Suspense fallback={<LoadingFallback />}>
+                          <RouteWrapper route={route}>
+                            <Component />
+                          </RouteWrapper>
+                        </Suspense>
+                      </ErrorBoundary>
+                    }
+                  />
+                );
+              })
+            )}
+
+            <Route path="*" element={<div>404 - Page Not Found</div>} />
+          </Routes>
+        </main>
+      </div>
+    </BrowserRouter>
+  );
+}
+
+// Route Wrapper to handle title and meta
+const RouteWrapper: React.FC<{ route: MicroFrontendRoute; children: React.ReactNode }> = ({ 
+  route, 
+  children 
+}) => {
+  useEffect(() => {
+    document.title = route.title;
+  }, [route.title]);
+
+  return <>{children}</>;
+};
+
+export default App;
+```
+
+### 11. Index HTML (Shell)
+
+**`index.html`**
+```html
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Shell App</title>
+    
+    <!-- Load runtime config BEFORE any module federation code -->
+    <script src="/runtime-config.js"></script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+```
+
+### 12. Remote App Example (Product)
+
+**`apps/product/module-federation.config.ts`**
+```typescript
+export default {
+  name: 'product',
+  
+  filename: 'remoteEntry.js',
+  
+  exposes: {
+    './ProductList': './src/components/ProductList.tsx',
+    './ProductDetail': './src/components/ProductDetail.tsx',
+  },
+
+  shared: {
+    react: {
+      singleton: true,
+      requiredVersion: '^18.3.1',
+    },
+    'react-dom': {
+      singleton: true,
+      requiredVersion: '^18.3.1',
+    },
+    'react-router-dom': {
+      singleton: true,
+      requiredVersion: '^6.22.0',
+    },
+  },
+};
+```
+
+**`apps/product/vite.config.ts`**
+```typescript
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
+import { federation } from '@module-federation/vite';
+import moduleFederationConfig from './module-federation.config';
+
+export default defineConfig({
+  plugins: [
+    react(),
+    federation(moduleFederationConfig),
+  ],
+  
+  build: {
+    target: 'esnext',
+  },
+
+  server: {
+    port: 3001,
+    cors: true,
+  },
+
+  preview: {
+    port: 3001,
+  },
+});
+```
+
+### 13. Package.json Scripts
+
+**`shell/package.json`**
+```json
+{
+  "name": "shell",
+  "scripts": {
+    "generate:config": "node scripts/generate-runtime-config.js",
+    "dev": "npm run generate:config && vite",
+    "build": "npm run generate:config && vite build",
+    "build:prod": "npm run generate:config && vite build --mode production",
+    "preview": "npm run generate:config && vite preview",
+    "serve:local": "npm run generate:config && vite preview --mode local"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.22.0",
+    "@module-federation/runtime": "^0.6.0"
+  },
+  "devDependencies": {
+    "@module-federation/vite": "^1.0.0",
+    "@vitejs/plugin-react": "^4.2.1",
+    "typescript": "^5.3.3",
+    "vite": "^5.1.0",
+    "vite-plugin-top-level-await": "^1.4.1"
+  }
+}
+```
+
+### 14. NX Workspace Configuration
+
+**`nx.json`**
+```json
+{
+  "targetDefaults": {
+    "build": {
+      "dependsOn": ["^build"],
+      "cache": true
+    },
+    "generate:config": {
+      "cache": false
+    }
+  }
+}
+```
+
+**`apps/shell/project.json`**
+```json
+{
+  "name": "shell",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "apps/shell/src",
+  "projectType": "application",
+  "targets": {
+    "generate:config": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "node apps/shell/scripts/generate-runtime-config.js",
+        "cwd": "apps/shell"
+      }
+    },
+    "build": {
+      "executor": "@nx/vite:build",
+      "dependsOn": ["generate:config"],
+      "options": {
+        "outputPath": "dist/apps/shell"
+      }
+    },
+    "serve": {
+      "executor": "@nx/vite:dev-server",
+      "dependsOn": ["generate:config"],
+      "options": {
+        "buildTarget": "shell:build",
+        "port": 3000
+      }
+    }
+  }
+}
+```
+
+### 15. Usage Instructions
+
+```bash
+# 1. Install dependencies
+npm install
+
+# 2. Start all apps in development
+nx run-many --target=serve --all
+
+# 3. Build for production
+nx run-many --target=build --all --configuration=production
+
+# 4. Preview production build
+nx run shell:preview --configuration=production
+```
+
+This setup provides:
+✅ Runtime configuration via `window.__RUNTIME__`
+✅ Environment-specific URLs from `.env` files
+✅ Type-safe configuration
+✅ Centralized route and page management
+✅ Error boundaries for each micro frontend
+✅ Shell controls all shared dependencies
+✅ Production-ready with proper error handling
