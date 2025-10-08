@@ -1,0 +1,105 @@
+import type { FederationRuntimePlugin } from '@module-federation/enhanced/runtime';
+
+interface RuntimeConfig {
+  environment?: string;
+  remotes?: Record<string, { url: string }>;
+  microFrontends?: Array<{
+    name: string;
+    url: string;
+    exposedModule: string;
+    routePath: string;
+  }>;
+}
+
+declare global {
+  interface Window {
+    __RUNTIME_CONFIG__?: RuntimeConfig;
+  }
+}
+
+const runtimePlugin: () => FederationRuntimePlugin = function () {
+  return {
+    name: 'dynamic-remote-runtime-plugin',
+    
+    // This hook runs before federation initializes
+    beforeInit(args) {
+      console.log('[Federation Runtime] beforeInit called', args);
+      
+      const runtimeConfig = window.__RUNTIME_CONFIG__;
+      
+      if (!runtimeConfig) {
+        console.warn('[Federation Runtime] No runtime config found in window.__RUNTIME_CONFIG__');
+        return args;
+      }
+
+      console.log('[Federation Runtime] Loading config:', runtimeConfig);
+
+      // Convert runtime config to federation remotes format
+      const dynamicRemotes: any[] = [];
+      
+      if (runtimeConfig.remotes) {
+        Object.entries(runtimeConfig.remotes).forEach(([name, config]) => {
+          console.log(`[Federation Runtime] Adding remote: ${name} -> ${config.url}`);
+          dynamicRemotes.push({
+            name,
+            entry: config.url,
+            alias: name,
+          });
+        });
+      }
+
+      if (runtimeConfig.microFrontends) {
+        runtimeConfig.microFrontends.forEach((mf) => {
+          // Avoid duplicates
+          if (!dynamicRemotes.find(r => r.name === mf.name)) {
+            console.log(`[Federation Runtime] Adding remote from microFrontends: ${mf.name} -> ${mf.url}`);
+            dynamicRemotes.push({
+              name: mf.name,
+              entry: mf.url,
+              alias: mf.name,
+            });
+          }
+        });
+      }
+
+      if (dynamicRemotes.length === 0) {
+        console.warn('[Federation Runtime] No dynamic remotes configured');
+        return args;
+      }
+
+      console.log('[Federation Runtime] Total dynamic remotes:', dynamicRemotes.length);
+
+      // Merge with existing remotes
+      return {
+        ...args,
+        options: {
+          ...args.options,
+          remotes: [
+            ...(args.options.remotes || []),
+            ...dynamicRemotes,
+          ],
+        },
+      };
+    },
+
+    // This hook runs after federation initializes
+    init(args) {
+      console.log('[Federation Runtime] init called', args);
+      return args;
+    },
+
+    // This hook runs before loading a remote
+    beforeLoadShare(args) {
+      console.log('[Federation Runtime] beforeLoadShare:', args);
+      return args;
+    },
+
+    // Error handling
+    errorLoadRemote(args) {
+      console.error('[Federation Runtime] Error loading remote:', args);
+      return args;
+    },
+  };
+};
+
+export default runtimePlugin;
