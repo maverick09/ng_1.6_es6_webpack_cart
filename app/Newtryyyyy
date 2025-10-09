@@ -1,0 +1,275 @@
+Perfect! Looking at the official Module Federation documentation in your images, I can see the complete list of hooks and their execution order. The issue is that you need to **persist the URL change through multiple hooks** because something is resetting it.
+
+## The Hook Execution Order
+
+From Image 1, the order is:
+1. `beforeInit` ✅ (You're updating here)
+2. `init`
+3. `beforeRequest` ✅ (You're updating here)
+4. `afterResolve` ✅ (You confirmed this works)
+5. `onLoad` ⚠️ **Missing - Add this!**
+6. `handlePreloadModule`
+7. `errorLoadRemote`
+8. `beforeLoadShare`
+9. `resolveShare`
+10. `beforePreloadRemote`
+11. `generatePreloadAssets`
+12. `createScript`
+
+## The Solution: Add `onLoad` Hook
+
+From Image 2, you can see `beforeInit` description says it "Updates the corresponding init configuration **before the MF instance is initialized**."
+
+The key is to **also update in `onLoad`** - this hook is called when the remote is actually being loaded:
+
+```typescript
+// apps/shell/src/core/plugins/runtimePlugin.ts
+import type { ModuleFederationRuntimePlugin } from '@module-federation/enhanced/runtime';
+import { getRemoteUrl } from '@evolve-ui/shared';
+
+export const runtimePlugin = (): ModuleFederationRuntimePlugin => ({
+  name: 'runtime-url-override-plugin',
+
+  /**
+   * beforeInit - Modify configuration before MF initializes
+   */
+  beforeInit(args) {
+    console.log('🔧 beforeInit:', args);
+    
+    if (args.options?.remotes && Array.isArray(args.options.remotes)) {
+      args.options.remotes = args.options.remotes.map((remote: any) => {
+        const runtimeUrl = getRemoteUrl(remote.name);
+        
+        if (runtimeUrl) {
+          console.log(`✨ beforeInit: Setting ${remote.name} to ${runtimeUrl}`);
+          return {
+            ...remote,
+            entry: `${runtimeUrl}/remoteEntry.js`,
+          };
+        }
+        
+        return remote;
+      });
+    }
+    
+    return args;
+  },
+
+  /**
+   * beforeRequest - Modify before each remote request
+   */
+  beforeRequest(args) {
+    console.log('🔄 beforeRequest:', args);
+    
+    const { id, options } = args;
+    
+    if (!id || !options?.remotes) return args;
+
+    const remoteName = id.split('/')[0];
+    const runtimeUrl = getRemoteUrl(remoteName);
+    
+    if (runtimeUrl) {
+      const remoteIndex = options.remotes.findIndex(
+        (r: any) => r.name === remoteName
+      );
+      
+      if (remoteIndex !== -1) {
+        console.log(`✨ beforeRequest: Updating ${remoteName} to ${runtimeUrl}`);
+        options.remotes[remoteIndex].entry = `${runtimeUrl}/remoteEntry.js`;
+      }
+    }
+
+    return args;
+  },
+
+  /**
+   * onLoad - CRITICAL: This is called when actually loading the remote!
+   */
+  onLoad(args) {
+    console.log('📦 onLoad called:', args);
+    
+    // Args structure: { id, expose, pkgNameOrAlias, remote, options, origin, ... }
+    if (args.remote) {
+      const remoteName = args.remote.name || args.remote;
+      const runtimeUrl = getRemoteUrl(remoteName);
+      
+      if (runtimeUrl) {
+        console.log(`✨ onLoad: Ensuring ${remoteName} uses ${runtimeUrl}`);
+        
+        // Update the remote configuration in the args
+        if (typeof args.remote === 'object') {
+          args.remote.entry = `${runtimeUrl}/remoteEntry.js`;
+        }
+        
+        // Also update in options.remotes if it exists
+        if (args.options?.remotes) {
+          const remoteIndex = args.options.remotes.findIndex(
+            (r: any) => r.name === remoteName
+          );
+          
+          if (remoteIndex !== -1) {
+            args.options.remotes[remoteIndex].entry = `${runtimeUrl}/remoteEntry.js`;
+          }
+        }
+      }
+    }
+    
+    return args;
+  },
+
+  /**
+   * afterResolve - Verify the resolution
+   */
+  afterResolve(args) {
+    console.log('✅ afterResolve:', args);
+    
+    if (args.pkgNameOrAlias) {
+      const remoteName = args.pkgNameOrAlias.split('/')[0];
+      console.log(`✅ Successfully resolved: ${remoteName}`);
+    }
+    
+    return args;
+  },
+
+  /**
+   * errorLoadRemote - Handle errors
+   */
+  errorLoadRemote(args) {
+    console.error('❌ errorLoadRemote:', args);
+    
+    const { id, error, from } = args;
+    console.error(`   ID: ${id}`);
+    console.error(`   From: ${from}`);
+    console.error(`   Error:`, error);
+    
+    // Log the remote configuration to see what URL it was trying
+    if (args.options?.remotes) {
+      const remoteName = id?.split('/')[0];
+      const remote = args.options.remotes.find((r: any) => r.name === remoteName);
+      console.error(`   Remote config at error time:`, remote);
+    }
+    
+    return args;
+  },
+});
+```
+
+## Alternative: Use `createScript` Hook
+
+If `onLoad` doesn't work, try intercepting at the script creation level:
+
+```typescript
+/**
+ * createScript - Intercept when the script tag is being created
+ */
+createScript(args) {
+  console.log('📜 createScript:', args);
+  
+  // Args: { url, attrs, ... }
+  if (args.url) {
+    const remoteName = extractRemoteNameFromUrl(args.url);
+    const runtimeUrl = getRemoteUrl(remoteName);
+    
+    if (runtimeUrl) {
+      const newUrl = `${runtimeUrl}/remoteEntry.js`;
+      console.log(`✨ createScript: Changing URL from ${args.url} to ${newUrl}`);
+      args.url = newUrl;
+    }
+  }
+  
+  return args;
+},
+
+// Helper function
+function extractRemoteNameFromUrl(url: string): string | undefined {
+  // Extract from URLs like "http://localhost:9090/remoteEntry.js"
+  // or "volPub@http://localhost:9090/remoteEntry.js"
+  const match = url.match(/(\w+)@|\/\/[^/]+\/(\w+)/);
+  return match?.[1] || match?.[2];
+}
+```
+
+## Complete Solution with All Hooks
+
+Here's the most robust version that updates at **every possible point**:
+
+```typescript
+export const runtimePlugin = (): ModuleFederationRuntimePlugin => {
+  const getCorrectEntry = (remoteName: string): string | undefined => {
+    const runtimeUrl = getRemoteUrl(remoteName);
+    return runtimeUrl ? `${runtimeUrl}/remoteEntry.js` : undefined;
+  };
+
+  const updateRemoteEntry = (remotes: any[], remoteName: string): void => {
+    const correctEntry = getCorrectEntry(remoteName);
+    if (!correctEntry) return;
+    
+    const remoteIndex = remotes.findIndex((r: any) => r.name === remoteName);
+    if (remoteIndex !== -1) {
+      console.log(`🔄 Updating ${remoteName} entry to ${correctEntry}`);
+      remotes[remoteIndex].entry = correctEntry;
+    }
+  };
+
+  return {
+    name: 'runtime-url-override-plugin',
+
+    beforeInit(args) {
+      console.log('🔧 beforeInit');
+      if (args.options?.remotes) {
+        args.options.remotes.forEach((remote: any) => {
+          const entry = getCorrectEntry(remote.name);
+          if (entry) remote.entry = entry;
+        });
+      }
+      return args;
+    },
+
+    beforeRequest(args) {
+      console.log('🔄 beforeRequest');
+      const remoteName = args.id?.split('/')[0];
+      if (remoteName && args.options?.remotes) {
+        updateRemoteEntry(args.options.remotes, remoteName);
+      }
+      return args;
+    },
+
+    onLoad(args) {
+      console.log('📦 onLoad');
+      if (args.remote && typeof args.remote === 'object') {
+        const entry = getCorrectEntry(args.remote.name);
+        if (entry) args.remote.entry = entry;
+      }
+      if (args.options?.remotes && args.remote?.name) {
+        updateRemoteEntry(args.options.remotes, args.remote.name);
+      }
+      return args;
+    },
+
+    afterResolve(args) {
+      console.log('✅ afterResolve');
+      const remoteName = args.pkgNameOrAlias?.split('/')[0];
+      if (remoteName && args.options?.remotes) {
+        updateRemoteEntry(args.options.remotes, remoteName);
+      }
+      return args;
+    },
+
+    errorLoadRemote(args) {
+      console.error('❌ errorLoadRemote');
+      const remoteName = args.id?.split('/')[0];
+      if (remoteName && args.options?.remotes) {
+        const remote = args.options.remotes.find((r: any) => r.name === remoteName);
+        console.error(`Remote config:`, remote);
+      }
+      return args;
+    },
+  };
+};
+```
+
+## The Key Insight
+
+The URL is being reset somewhere between `afterResolve` and the actual load attempt. The **`onLoad` hook** is your best bet because it's called right when the remote module is being loaded, which is the last chance to fix the URL before the error.
+
+Try adding `onLoad` first, and if that doesn't work, add `createScript` as well. One of these will catch it! 🎯
