@@ -1,0 +1,264 @@
+**YES! Now I see the core issue!** 🎯
+
+Looking at **Image 2**, you have:
+
+```typescript
+import ('./module-federation-runtime.bootstrap').then(( data)=> {
+  console.log('Module federation runtime bootstrap completed successfully:', data);
+  
+  // Import app-bootstrap to start the application
+  return import('./app-bootstrap');
+}).catch((error) => {
+  console.error('Error during module federation runtime bootstrap:', error);
+});
+```
+
+This looks correct! The `.then()` waits for the bootstrap, then imports app-bootstrap. **BUT** you're still getting the "Please call createInstance first" error.
+
+## The Real Issue: Two Different Federation Instances
+
+Looking at **Image 1**, I see:
+
+```
+Error during module federation runtime bootstrap: Error: [ Federation Runtime ]: Please call createInstance first. #RUNTIME-009
+  at error2 (chunk-6QNVA5MU.js?v=df9048ad:932:13)
+  at loadShare (chunk-6QNVA5MU.js?v=df9048ad:3912:19)
+  at chunk-21YVU544.js?v=df9048ad:17:39
+  at async chunk-21YVU544.js?v=df9048ad:33:80
+  (anonymous) @ main.tsx:7
+  Promise.catch (async)
+  (anonymous) @ main.tsx:6
+```
+
+**The error is happening DURING the bootstrap import itself!** Not after.
+
+This means when you import the bootstrap file, it's trying to import shared dependencies (like `react`) **before** the `init()` completes.
+
+## The Solution: Move Imports AFTER init()
+
+Your **module-federation-runtime.bootstrap.ts** is importing things at the top of the file that trigger `loadShare` before `init()` runs:
+
+```typescript
+// module-federation-runtime.bootstrap.ts
+import { init, registerPlugins } from '@module-federation/enhanced/runtime';  // ← Fine
+import runtimePlugin from './core/plugins/runtimePlugin';  // ← This might import React!
+
+// ... then later
+init({ ... });
+```
+
+If your `runtimePlugin` file imports React or any shared dependency, it will try to use `loadShare` **before** `init()` is called.
+
+## Fix Option 1: Make Bootstrap Truly Async
+
+Change your **module-federation-runtime.bootstrap.ts**:
+
+```typescript
+// module-federation-runtime.bootstrap.ts
+import { init, registerPlugins } from '@module-federation/enhanced/runtime';
+
+// DON'T import the plugin yet if it has React dependencies
+// import runtimePlugin from './core/plugins/runtimePlugin';
+
+localStorage.setItem('FEDERATION_DEBUG', 'true');
+
+// Create and register plugin WITHOUT importing dependencies
+const createRuntimePlugin = () => {
+  return {
+    name: 'debug-runtime-plugin',
+    beforeInit(args) {
+      console.log('[runtimePlugin] beforeInit:', args);
+      return args;
+    },
+    beforeRequest(args) {
+      console.log('[runtimePlugin] beforeRequest:', args);
+      return args;
+    },
+    afterResolve(args) {
+      console.log('[runtimePlugin] afterResolve:', args);
+      return args;
+    },
+    resolveShare(args) {
+      console.log('[runtimePlugin] resolveShare:', args);
+      return args;
+    },
+    errorLoadRemote(args) {
+      console.error('[runtimePlugin] errorLoadRemote:', args);
+      return args;
+    },
+  };
+};
+
+registerPlugins([createRuntimePlugin()]);
+
+// Now init and AWAIT it
+export const federationReady = init({
+  name: 'shell',
+  remotes: [
+    {
+      name: 'volPub',
+      entry: 'http://localhost:9091/remoteEntry.js',
+      type: 'module',
+    }
+  ],
+  shared: {
+    react: {
+      version: '18.3.1',
+      lib: () => import('react'),
+      shareConfig: {
+        singleton: true,
+        requiredVersion: '18.3.1',
+        strictVersion: false,
+      }
+    },
+    // ... rest of your shared config
+  },
+});
+
+// CRITICAL: Await the init to complete
+await federationReady;
+
+console.log('✅ Module Federation Runtime initialized and ready');
+```
+
+## Fix Option 2: Check Your runtimePlugin
+
+Check if your `./core/plugins/runtimePlugin` file imports React or any shared dependency:
+
+```typescript
+// If your runtimePlugin.ts looks like this:
+import React from 'react';  // ← BAD! This triggers loadShare before init
+import { ModuleFederationRuntimePlugin } from '@module-federation/enhanced/runtime';
+
+export default function runtimePlugin() {
+  // ...
+}
+```
+
+**Remove any React or shared dependency imports from the plugin file.**
+
+## Fix Option 3: Use Your Old Script Tag Approach (Better!)
+
+Actually, your **original script tag approach was closer to the solution!** Let me refine it:
+
+```typescript
+// module-federation-runtime.bootstrap.ts
+import { init, registerPlugins } from '@module-federation/enhanced/runtime';
+
+localStorage.setItem('FEDERATION_DEBUG', 'true');
+
+// Register a simple plugin without dependencies
+registerPlugins([/* your plugin */]);
+
+// Initialize federation
+const federationInstance = init({
+  name: 'shell',
+  remotes: [
+    {
+      name: 'volPub',
+      entry: 'http://localhost:9091/remoteEntry.js',
+      type: 'module',
+    }
+  ],
+  shared: {
+    // ... your shared config
+  },
+});
+
+// WAIT for init to complete
+await federationInstance;
+
+// NOW preload the remote manually
+await new Promise<void>((resolve, reject) => {
+  const script = document.createElement('script');
+  script.src = 'http://localhost:9091/remoteEntry.js';
+  script.type = 'module';
+  
+  script.onload = () => {
+    console.log('✅ Remote entry loaded');
+    // Wait a bit for the container to initialize
+    setTimeout(resolve, 100);
+  };
+  
+  script.onerror = () => reject(new Error('Failed to load remote entry'));
+  
+  document.head.appendChild(script);
+});
+
+console.log('✅ Federation fully initialized and remotes loaded');
+
+export default federationInstance;
+```
+
+## Fix Option 4: The Nuclear Option - Separate the Init
+
+Create three files:
+
+**1. init-federation.ts** (runs FIRST, NO imports of shared deps):
+```typescript
+import { init, registerPlugins } from '@module-federation/enhanced/runtime';
+
+export async function initFederation() {
+  localStorage.setItem('FEDERATION_DEBUG', 'true');
+  
+  registerPlugins([/* simple plugin */]);
+  
+  const instance = init({
+    name: 'shell',
+    remotes: [{
+      name: 'volPub',
+      entry: 'http://localhost:9091/remoteEntry.js',
+      type: 'module',
+    }],
+    shared: {
+      react: {
+        version: '18.3.1',
+        lib: () => import('react'),  // Dynamic import is OK here
+        shareConfig: {
+          singleton: true,
+          requiredVersion: '18.3.1',
+          strictVersion: false,
+        }
+      },
+      // ... rest
+    },
+  });
+  
+  await instance;
+  console.log('✅ Federation initialized');
+  return instance;
+}
+```
+
+**2. main.tsx**:
+```typescript
+import { initFederation } from './init-federation';
+
+(async () => {
+  try {
+    // Initialize federation FIRST
+    await initFederation();
+    
+    // THEN import app (which may use React)
+    await import('./app-bootstrap');
+  } catch (error) {
+    console.error('❌ Initialization failed:', error);
+  }
+})();
+```
+
+**3. app-bootstrap.tsx** (your current app code):
+```typescript
+// All your React imports and app logic here
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+// ... rest of your app
+```
+
+## The Key Insight
+
+The error happens **during the import of your bootstrap file**, not after. This means something in that file (or its dependencies) is trying to use `loadShare` before `init()` completes.
+
+**Check your `runtimePlugin` file for any imports of shared dependencies like React!**
+
+Which fix would you like to try first? I recommend **Fix Option 4** (the nuclear option) as it's the cleanest separation.
