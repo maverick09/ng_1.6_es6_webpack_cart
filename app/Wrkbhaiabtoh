@@ -1,0 +1,290 @@
+**PERFECT!** You're absolutely right - the issue is still with the URL not being updated properly. I can see from Image 1 that `onLoad` is highlighted, and from Images 2-3, we can see the hook signatures.
+
+Looking at Image 3, the `onLoad` hook has access to a `remote` object with `remoteInfo` that contains the `entry` field. Let's use **ALL the available hooks** to ensure the URL persists.
+
+## Complete Solution: Update in Every Hook
+
+Here's the comprehensive plugin that updates the URL in EVERY possible hook:
+
+```typescript
+// apps/shell/src/core/plugins/runtimePlugin.ts
+import type { ModuleFederationRuntimePlugin } from '@module-federation/enhanced/runtime';
+import { getRemoteUrl } from '@evolve-ui/shared';
+
+console.log('runtimePlugin loaded and executed');
+
+export const runtimePlugin = (): ModuleFederationRuntimePlugin => {
+  const getCorrectEntry = (remoteName: string): string | undefined => {
+    const runtimeUrl = getRemoteUrl(remoteName);
+    if (runtimeUrl) {
+      return `${runtimeUrl}/remoteEntry.js`;
+    }
+    return undefined;
+  };
+
+  return {
+    name: 'runtime-url-override-plugin',
+
+    /**
+     * 1. beforeInit - First chance to update
+     */
+    beforeInit(args) {
+      console.log('🔧 [1] beforeInit');
+      
+      if (args.options?.remotes && Array.isArray(args.options.remotes)) {
+        args.options.remotes = args.options.remotes.map((remote: any) => {
+          const entry = getCorrectEntry(remote.name);
+          if (entry) {
+            console.log(`   ✨ Setting ${remote.name} entry to ${entry}`);
+            return { ...remote, entry };
+          }
+          return remote;
+        });
+      }
+      
+      return args;
+    },
+
+    /**
+     * 2. init - Can't override, but log
+     */
+    // init is not a hook we can override
+
+    /**
+     * 3. beforeRequest - Update before each request
+     */
+    beforeRequest(args) {
+      console.log('🔄 [3] beforeRequest');
+      
+      const { id, options } = args;
+      
+      if (id && options?.remotes) {
+        const remoteName = id.split('/')[0];
+        const entry = getCorrectEntry(remoteName);
+        
+        if (entry) {
+          const remoteIndex = options.remotes.findIndex(
+            (r: any) => r.name === remoteName
+          );
+          
+          if (remoteIndex !== -1) {
+            console.log(`   ✨ Updating ${remoteName} entry to ${entry}`);
+            options.remotes[remoteIndex].entry = entry;
+          }
+        }
+      }
+
+      return args;
+    },
+
+    /**
+     * 4. afterResolve - Verify after resolution
+     */
+    afterResolve(args) {
+      console.log('✅ [4] afterResolve');
+      
+      const remoteName = args.pkgNameOrAlias?.split('/')[0];
+      
+      if (remoteName && args.options?.remotes) {
+        const entry = getCorrectEntry(remoteName);
+        
+        if (entry) {
+          const remoteIndex = args.options.remotes.findIndex(
+            (r: any) => r.name === remoteName
+          );
+          
+          if (remoteIndex !== -1) {
+            console.log(`   ✨ Ensuring ${remoteName} entry is ${entry}`);
+            args.options.remotes[remoteIndex].entry = entry;
+          }
+        }
+      }
+
+      return args;
+    },
+
+    /**
+     * 5. onLoad - CRITICAL: Triggered when module loads
+     * This has access to args.remote.remoteInfo with entry!
+     */
+    onLoad(args) {
+      console.log('📦 [5] onLoad - CRITICAL HOOK', args);
+      
+      // Update remote.remoteInfo.entry
+      if (args.remote?.remoteInfo) {
+        const remoteName = args.remote.remoteInfo.name;
+        const entry = getCorrectEntry(remoteName);
+        
+        if (entry) {
+          console.log(`   ✨ onLoad: Setting remoteInfo.entry to ${entry}`);
+          args.remote.remoteInfo.entry = entry;
+        }
+      }
+      
+      // Also update in options.remotes
+      if (args.options?.remotes && args.remote?.remoteInfo?.name) {
+        const remoteName = args.remote.remoteInfo.name;
+        const entry = getCorrectEntry(remoteName);
+        
+        if (entry) {
+          const remoteIndex = args.options.remotes.findIndex(
+            (r: any) => r.name === remoteName
+          );
+          
+          if (remoteIndex !== -1) {
+            console.log(`   ✨ onLoad: Also updating options.remotes[${remoteIndex}].entry`);
+            args.options.remotes[remoteIndex].entry = entry;
+          }
+        }
+      }
+
+      return args;
+    },
+
+    /**
+     * 6. handlePreloadModule - Update if preloading
+     */
+    handlePreloadModule(args) {
+      console.log('📋 [6] handlePreloadModule', args);
+      
+      if (args.remoteSnapshot) {
+        const remoteName = args.name;
+        const entry = getCorrectEntry(remoteName);
+        
+        if (entry && args.remoteSnapshot.entry) {
+          console.log(`   ✨ handlePreloadModule: Setting entry to ${entry}`);
+          args.remoteSnapshot.entry = entry;
+        }
+      }
+
+      return args;
+    },
+
+    /**
+     * 7. errorLoadRemote - Log the error
+     */
+    errorLoadRemote(args) {
+      console.error('❌ [7] errorLoadRemote');
+      console.error('   ID:', args.id);
+      console.error('   Error:', args.error);
+      
+      if (args.options?.remotes) {
+        const remoteName = args.id?.split('/')[0];
+        const remote = args.options.remotes.find((r: any) => r.name === remoteName);
+        console.error('   Remote config at error:', remote);
+      }
+
+      return args;
+    },
+
+    /**
+     * 8. beforeLoadShare - Update if needed
+     */
+    beforeLoadShare(args) {
+      console.log('📚 [8] beforeLoadShare');
+      return args;
+    },
+
+    /**
+     * 9. resolveShare - Log
+     */
+    resolveShare(args) {
+      console.log('🔍 [9] resolveShare');
+      return args;
+    },
+
+    /**
+     * 10. beforePreloadRemote - Update before preload
+     */
+    beforePreloadRemote(args) {
+      console.log('🔮 [10] beforePreloadRemote', args);
+      
+      if (args.preloadConfig?.remoteInfo) {
+        const remoteName = args.preloadConfig.remoteInfo.name;
+        const entry = getCorrectEntry(remoteName);
+        
+        if (entry) {
+          console.log(`   ✨ beforePreloadRemote: Setting entry to ${entry}`);
+          args.preloadConfig.remoteInfo.entry = entry;
+        }
+      }
+
+      return args;
+    },
+
+    /**
+     * 11. generatePreloadAssets - Log
+     */
+    generatePreloadAssets(args) {
+      console.log('🎨 [11] generatePreloadAssets');
+      return args;
+    },
+
+    /**
+     * 12. createScript - CRITICAL: Intercept script creation
+     */
+    createScript(args) {
+      console.log('📜 [12] createScript - CRITICAL', args);
+      
+      if (args.url) {
+        console.log(`   📍 Original URL: ${args.url}`);
+        
+        // Extract remote name from URL or check against known remotes
+        if (args.url.includes('remoteEntry')) {
+          // Try to determine which remote this is for
+          const remotes = ['volPub']; // Add your remote names here
+          
+          for (const remoteName of remotes) {
+            const correctEntry = getCorrectEntry(remoteName);
+            if (correctEntry && !args.url.includes(correctEntry)) {
+              console.log(`   ✨ createScript: Overriding URL to ${correctEntry}`);
+              args.url = correctEntry;
+              break;
+            }
+          }
+        }
+        
+        console.log(`   📍 Final URL: ${args.url}`);
+      }
+
+      return args;
+    },
+  };
+};
+```
+
+## Key Points
+
+The most important hooks for URL override are:
+
+1. **`onLoad`** (Image 3) - Has `args.remote.remoteInfo.entry` that needs updating
+2. **`createScript`** (Image 1, #12) - This is where the actual script tag URL is created
+3. **`handlePreloadModule`** (Image 2) - For preloading scenarios
+
+## Alternative: Force it in `createScript`
+
+If the above doesn't work, try this more aggressive approach in `createScript`:
+
+```typescript
+createScript(args) {
+  console.log('📜 createScript', args);
+  
+  // Force override any localhost:9090 to localhost:9091
+  if (args.url && args.url.includes('localhost:9090')) {
+    const newUrl = args.url.replace('localhost:9090', 'localhost:9091');
+    console.log(`🔧 FORCE: Changing ${args.url} to ${newUrl}`);
+    args.url = newUrl;
+  }
+  
+  return args;
+}
+```
+
+## Test and Watch Network Tab
+
+After implementing this, you should see in the console:
+1. All 12 hooks firing in order
+2. URL being updated in multiple places
+3. Finally, in the Network tab, you should see a request to `http://localhost:9091/remoteEntry.js`
+
+If you still don't see the request in the Network tab after this, the issue might be that Module Federation is caching or the remote isn't being requested at all. Let me know what the console shows with all these hooks!
