@@ -1,0 +1,1231 @@
+**YES! You're absolutely right!** 🎯 This is EXACTLY the dynamic MFE setup you've been trying to achieve! Let me convert this Angular routing pattern to React.
+
+This approach works because:
+1. ✅ Routes are created dynamically at runtime
+2. ✅ URLs come from configuration (can be changed per environment)
+3. ✅ No hardcoded remote URLs in build config
+4. ✅ `loadChildren` (Angular) = `lazy` import with `loadRemote` (React)
+
+## React Version of Your Angular Router Config
+
+### 1. Route Mapper Service
+
+```typescript
+// apps/shell/src/services/routeMapper.service.ts
+import { RouteObject } from 'react-router-dom';
+import { lazy } from 'react';
+import { loadRemote } from '@module-federation/enhanced/runtime';
+import { DeerMicroFrontEnd } from '../types/micro-frontend.types';
+
+/**
+ * Create a lazy-loaded component for a micro-frontend
+ */
+function createLazyMfeComponent(mfe: DeerMicroFrontEnd, exposedModule: string = './Module') {
+  return lazy(async () => {
+    console.log(`📦 Loading ${mfe.remoteName}${exposedModule} from ${mfe.remoteEntry}`);
+    
+    try {
+      const module = await loadRemote(`${mfe.remoteName}${exposedModule}`, {
+        from: 'runtime',
+        name: mfe.remoteName,
+        entry: mfe.remoteEntry,
+        type: mfe.type,
+      });
+
+      console.log(`✅ Loaded ${mfe.remoteName}${exposedModule}`);
+      
+      // Return the module in the format React Router expects
+      return {
+        default: module.default || module[mfe.moduleName] || module,
+      };
+    } catch (error) {
+      console.error(`❌ Failed to load ${mfe.remoteName}${exposedModule}:`, error);
+      throw error;
+    }
+  });
+}
+
+/**
+ * Map deer micro-frontend config to React Router routes
+ * This is equivalent to your Angular's DeerAppRoutes mapping
+ */
+export function createDeerAppRoutes(
+  deerMicroFrontendRoutes: DeerMicroFrontEnd[]
+): RouteObject[] {
+  const routes: RouteObject[] = [
+    // Fos Hierarchy Module
+    {
+      path: 'foshierarchy',
+      lazy: async () => {
+        const module = await import('./foshierarchy/foshierarchy.module');
+        return { Component: module.FosHierarchyModule };
+      },
+    },
+    
+    // Quick Tour
+    {
+      path: 'quick-tour',
+      outlet: 'modal',
+      lazy: async () => {
+        const module = await import('./quick-tour/quick-tour.module');
+        return { Component: module.QuickTourModule };
+      },
+    },
+    
+    // Inbox
+    {
+      path: 'inbox',
+      lazy: async () => {
+        const module = await import('./inbox/inbox.module');
+        return { Component: module.InboxModule };
+      },
+      // In React Router, you'd handle canActivate with a wrapper component
+    },
+  ];
+
+  // Map micro-frontend routes dynamically
+  const mfeRoutes = deerMicroFrontendRoutes.map((mfe) => {
+    // Determine the exposed module path
+    const exposedModule = getExposedModuleForMfe(mfe);
+    
+    return {
+      path: mfe.routePath.replace(/^\//, ''), // Remove leading slash
+      Component: createLazyMfeComponent(mfe, exposedModule),
+    } as RouteObject;
+  });
+
+  // Add catch-all/not-found route
+  routes.push(...mfeRoutes);
+  routes.push({
+    path: '**',
+    Component: lazy(() => import('./pages/NotFoundComponent')),
+  });
+
+  return routes;
+}
+
+/**
+ * Determine the exposed module path for each MFE
+ * This matches your Angular logic for different module paths
+ */
+function getExposedModuleForMfe(mfe: DeerMicroFrontEnd): string {
+  // Map module names to their exposed paths
+  const moduleMap: Record<string, string> = {
+    'PeopleMicroAppModule': './PeopleModule',
+    'FinancialDashboardModule': './FinancialModule',
+    'DeerTaskMicroAppModule': './TaskModule',
+    'UserTaskCreatorAppModule': './UserTaskModule',
+    'IcoMLineageModule': './LineageModule',
+  };
+
+  return moduleMap[mfe.moduleName] || './Module';
+}
+```
+
+### 2. Route Configuration Component
+
+```typescript
+// apps/shell/src/components/DeerAppRouter.tsx
+import React, { Suspense } from 'react';
+import { Routes, Route, Outlet } from 'react-router-dom';
+import { createDeerAppRoutes } from '../services/routeMapper.service';
+import { deerMicroFrontendRoutes } from '../config/deerMicroFrontendRoutes.config';
+import { environment } from '../config/environment';
+
+const LoadingFallback = () => (
+  <div style={{ padding: '40px', textAlign: 'center' }}>
+    <div>Loading module...</div>
+  </div>
+);
+
+export const DeerAppRouter: React.FC = () => {
+  // Get dynamic routes from config
+  const microFrontends = deerMicroFrontendRoutes(environment);
+  const routes = createDeerAppRoutes(microFrontends);
+
+  return (
+    <Suspense fallback={<LoadingFallback />}>
+      <Routes>
+        {routes.map((route, index) => {
+          const RouteComponent = route.Component as React.ComponentType;
+          
+          return (
+            <Route
+              key={route.path || index}
+              path={route.path}
+              element={<RouteComponent />}
+            />
+          );
+        })}
+      </Routes>
+    </Suspense>
+  );
+};
+```
+
+### 3. Enhanced Version with Route Proxy Component
+
+```typescript
+// apps/shell/src/components/RouteProxyComponent.tsx
+import React, { Suspense } from 'react';
+import { useParams, useLocation } from 'react-router-dom';
+
+interface RouteProxyComponentProps {
+  LazyComponent: React.LazyExoticComponent<React.ComponentType>;
+  fallback?: React.ReactNode;
+}
+
+/**
+ * Proxy component that handles routing context for MFEs
+ * Similar to Angular's RouterModule forwarding
+ */
+export const RouteProxyComponent: React.FC<RouteProxyComponentProps> = ({
+  LazyComponent,
+  fallback = <div>Loading...</div>,
+}) => {
+  const params = useParams();
+  const location = useLocation();
+
+  console.log('🔀 RouteProxyComponent - Routing to MFE', {
+    path: location.pathname,
+    params,
+  });
+
+  return (
+    <Suspense fallback={fallback}>
+      <LazyComponent />
+    </Suspense>
+  );
+};
+```
+
+### 4. Main App Setup
+
+```typescript
+// apps/shell/src/App.tsx
+import React, { useEffect, useState } from 'react';
+import { BrowserRouter } from 'react-router-dom';
+import { DeerAppRouter } from './components/DeerAppRouter';
+import { loadMicroFrontendRemoteEntries } from './services/deerMicroAppLoader.service';
+import { deerMicroFrontendRoutes } from './config/deerMicroFrontendRoutes.config';
+import { environment } from './config/environment';
+
+function App() {
+  const [isReady, setIsReady] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const initializeApp = async () => {
+      try {
+        console.log('🚀 Initializing Deer Micro App Shell...');
+        
+        // Get MFE configuration
+        const microFrontends = deerMicroFrontendRoutes(environment);
+        
+        console.log('📋 Loading remote entries for:', microFrontends.map(m => m.remoteName));
+        
+        // Preload all remote entries (optional but recommended)
+        await loadMicroFrontendRemoteEntries(microFrontends);
+        
+        console.log('✅ All remote entries loaded');
+        setIsReady(true);
+      } catch (err) {
+        console.error('❌ Failed to initialize app:', err);
+        setError(err instanceof Error ? err.message : 'Unknown error');
+      }
+    };
+
+    initializeApp();
+  }, []);
+
+  if (error) {
+    return (
+      <div style={{ padding: '40px', textAlign: 'center', color: 'red' }}>
+        <h2>Initialization Error</h2>
+        <p>{error}</p>
+      </div>
+    );
+  }
+
+  if (!isReady) {
+    return (
+      <div style={{ padding: '40px', textAlign: 'center' }}>
+        <h2>Loading Deer Micro Apps...</h2>
+        <p>Initializing application...</p>
+      </div>
+    );
+  }
+
+  return (
+    <BrowserRouter>
+      <div>
+        {/* Your app shell UI */}
+        <header>
+          <h1>Deer Micro App Shell</h1>
+        </header>
+        
+        <main>
+          <DeerAppRouter />
+        </main>
+      </div>
+    </BrowserRouter>
+  );
+}
+
+export default App;
+```
+
+### 5. Alternative: More Angular-like Approach with Route Config
+
+```typescript
+// apps/shell/src/routing/deer-shell-app.routing.ts
+import { RouteObject } from 'react-router-dom';
+import { lazy } from 'react';
+import { DeerMicroFrontEnd } from '../types/micro-frontend.types';
+import { createDeerAppRoutes } from '../services/routeMapper.service';
+import { deerMicroFrontendRoutes } from '../config/deerMicroFrontendRoutes.config';
+import { environment } from '../config/environment';
+
+/**
+ * Main routing configuration
+ * Matches your Angular app.routing.ts structure
+ */
+export const ROUTING: RouteObject[] = [
+  {
+    path: '',
+    children: [
+      // Static routes
+      {
+        path: 'foshierarchy',
+        lazy: () => import('../features/foshierarchy/FosHierarchyModule'),
+      },
+      {
+        path: 'quick-tour',
+        lazy: () => import('../features/quick-tour/QuickTourModule'),
+      },
+      {
+        path: 'inbox',
+        lazy: () => import('../features/inbox/InboxModule'),
+      },
+      
+      // Dynamic micro-frontend routes
+      ...createDeerAppRoutes(deerMicroFrontendRoutes(environment)),
+      
+      // Catch-all
+      {
+        path: '**',
+        Component: lazy(() => import('../pages/NotFoundComponent')),
+      },
+    ],
+  },
+];
+
+// Export module with providers (like Angular's RouterModule)
+export const enableDebug = false;
+export const useHash = true;
+export const preloadingStrategy = 'PreloadAllModules'; // React doesn't have this, but you can implement similar behavior
+```
+
+### 6. Use in Main App
+
+```typescript
+// apps/shell/src/main.tsx
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+import { createBrowserRouter, RouterProvider } from 'react-router-dom';
+import { ROUTING } from './routing/deer-shell-app.routing';
+import './index.css';
+
+// Create router from config (like Angular's provideRouter)
+const router = createBrowserRouter(ROUTING, {
+  future: {
+    v7_startTransition: true,
+  },
+});
+
+ReactDOM.createRoot(document.getElementById('root')!).render(
+  <React.StrictMode>
+    <RouterProvider router={router} />
+  </React.StrictMode>
+);
+```
+
+## Why This Works (Same as Your Angular Setup)
+
+### In Webpack Module Federation (Your Angular):
+```typescript
+loadChildren: () => import('./quick-tour/quick-tour.module').then(m => m.QuickTourModule)
+```
+
+### In Vite Module Federation (React):
+```typescript
+Component: lazy(() => loadRemote('quickTour/Module').then(m => ({ default: m.default })))
+```
+
+**Both approaches:**
+1. ✅ Load modules dynamically at runtime
+2. ✅ Use URLs from configuration (not build-time)
+3. ✅ Support environment-specific URLs
+4. ✅ No hardcoded remote URLs in build config
+
+## Key Advantages of This Approach
+
+1. **Runtime URL Resolution** - URLs determined when app loads, not at build time
+2. **Environment Agnostic** - Same build works in dev/staging/prod
+3. **Dynamic Discovery** - Can fetch MFE config from API
+4. **Lazy Loading** - Only loads MFEs when routes are accessed
+5. **Type Safety** - Full TypeScript support
+
+This is EXACTLY what you've been trying to achieve! The route mapping approach with `loadRemote` at runtime gives you the same flexibility as your Angular Webpack setup. 
+
+
+Perfect! I can see your actual micro-frontend configuration. Let me convert this to React/TypeScript format:
+
+## React/TypeScript Version of Your Config
+
+### 1. Types Definition
+
+```typescript
+// apps/shell/src/types/micro-frontend.types.ts
+
+export interface DeerMicroFrontEnd {
+  remoteEntry: string;
+  remoteName: string;
+  routePath: string;
+  moduleName: string;
+  type: 'module' | 'var';
+}
+
+export interface MicroFrontendEnvironment {
+  production: boolean;
+  isEdEnabled: boolean;
+  port: number;
+}
+```
+
+### 2. Configuration File
+
+```typescript
+// apps/shell/src/config/deerMicroFrontendRoutes.config.ts
+import { DeerMicroFrontEnd } from '../types/micro-frontend.types';
+
+/**
+ * Get the appropriate URL based on environment
+ */
+function getLocalMicroAppUrl(
+  environment: { isEdEnabled: boolean; production: boolean },
+  port: number
+): string {
+  if (environment.production) {
+    return window.location.origin;
+  }
+  return `http://localhost:${port}`;
+}
+
+/**
+ * Micro-frontend route configuration
+ * This matches your Angular config structure
+ */
+export const deerMicroFrontendRoutes = (
+  environment: { isEdEnabled: boolean; production: boolean }
+): DeerMicroFrontEnd[] => [
+  // People Micro App
+  {
+    remoteEntry: `${getLocalMicroAppUrl(environment, 9050)}/acct/people-micro-app/remoteEntry.js`,
+    remoteName: 'people',
+    routePath: '/people',
+    moduleName: 'PeopleMicroAppModule',
+    type: 'module',
+  },
+  
+  // Financial Dashboard App
+  {
+    remoteEntry: `${getLocalMicroAppUrl(environment, 9050)}/acct/financial-micro-app/remoteEntry.js`,
+    remoteName: 'FinancialDashboardApp',
+    routePath: '/financial',
+    moduleName: 'FinancialDashboardModule',
+    type: 'module',
+  },
+  
+  // Deer Task App
+  {
+    remoteEntry: `${getLocalMicroAppUrl(environment, 9050)}/acct/deer-task-micro-app/remoteEntry.js`,
+    remoteName: 'DeerTask',
+    routePath: '/task-v2',
+    moduleName: 'DeerTaskMicroAppModule',
+    type: 'module',
+  },
+  
+  // User Task Creator App
+  {
+    remoteEntry: `${getLocalMicroAppUrl(environment, 9050)}/acct/deer-task-micro-app/remoteEntry.js`,
+    remoteName: 'UserTask',
+    routePath: '/user-task',
+    moduleName: 'UserTaskCreatorAppModule',
+    type: 'module',
+  },
+  
+  // IcoM Lineage App
+  {
+    remoteEntry: `${getLocalMicroAppUrl(environment, 9050)}/acct/ico-micro-app/remoteEntry.js`,
+    remoteName: 'IcoMLineage',
+    routePath: '/el',
+    moduleName: 'IcoMLineageModule',
+    type: 'module',
+  },
+];
+```
+
+### 3. Environment Configuration
+
+```typescript
+// apps/shell/src/config/environment.ts
+
+export const environment = {
+  production: import.meta.env.PROD,
+  isEdEnabled: import.meta.env.VITE_ED_ENABLED === 'true',
+  port: 9050,
+};
+
+export const environmentDev = {
+  production: false,
+  isEdEnabled: false,
+  port: 9050,
+};
+
+export const environmentProd = {
+  production: true,
+  isEdEnabled: true,
+  port: 9050,
+};
+```
+
+### 4. Micro Frontend Loader Service
+
+```typescript
+// apps/shell/src/services/deerMicroAppLoader.service.ts
+import { loadRemote } from '@module-federation/enhanced/runtime';
+import { DeerMicroFrontEnd } from '../types/micro-frontend.types';
+
+/**
+ * Load a remote micro-frontend module
+ */
+export async function loadRemoteModule(
+  mfe: DeerMicroFrontEnd,
+  exposedModule: string = './Module'
+): Promise<any> {
+  const remoteId = `${mfe.remoteName}${exposedModule}`;
+  
+  console.log(`📦 Loading remote: ${remoteId} from ${mfe.remoteEntry}`);
+
+  try {
+    const module = await loadRemote(remoteId, {
+      from: 'runtime',
+      name: mfe.remoteName,
+      entry: mfe.remoteEntry,
+      type: mfe.type,
+    });
+
+    console.log(`✅ Loaded: ${remoteId}`);
+    return module;
+  } catch (error) {
+    console.error(`❌ Failed to load ${remoteId}:`, error);
+    throw error;
+  }
+}
+
+/**
+ * Preload all micro-frontend remote entries
+ */
+export async function loadMicroFrontendRemoteEntries(
+  microApps: DeerMicroFrontEnd[]
+): Promise<void> {
+  console.log('🔄 Preloading micro-frontend remote entries...');
+
+  const loadPromises = microApps.map(async (mfe) => {
+    return new Promise<void>((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = mfe.remoteEntry;
+      script.type = mfe.type === 'module' ? 'module' : 'text/javascript';
+      
+      script.onload = () => {
+        console.log(`✅ Preloaded: ${mfe.remoteName}`);
+        resolve();
+      };
+      
+      script.onerror = () => {
+        console.error(`❌ Failed to preload: ${mfe.remoteName} from ${mfe.remoteEntry}`);
+        reject(new Error(`Failed to load ${mfe.remoteEntry}`));
+      };
+      
+      document.head.appendChild(script);
+    });
+  });
+
+  await Promise.all(loadPromises);
+  console.log('✅ All remote entries preloaded');
+}
+```
+
+### 5. Dynamic Route Component
+
+```typescript
+// apps/shell/src/components/MicroFrontendRoute.tsx
+import React, { lazy, Suspense } from 'react';
+import { DeerMicroFrontEnd } from '../types/micro-frontend.types';
+import { loadRemoteModule } from '../services/deerMicroAppLoader.service';
+
+interface MicroFrontendRouteProps {
+  mfe: DeerMicroFrontEnd;
+  exposedModule?: string;
+  fallback?: React.ReactNode;
+}
+
+export const MicroFrontendRoute: React.FC<MicroFrontendRouteProps> = ({
+  mfe,
+  exposedModule = './App',
+  fallback = (
+    <div style={{ padding: '20px', textAlign: 'center' }}>
+      <h3>Loading {mfe.moduleName}...</h3>
+    </div>
+  ),
+}) => {
+  const RemoteComponent = lazy(() =>
+    loadRemoteModule(mfe, exposedModule).then((module) => ({
+      default: module.default || module[mfe.moduleName] || module,
+    }))
+  );
+
+  return (
+    <Suspense fallback={fallback}>
+      <RemoteComponent />
+    </Suspense>
+  );
+};
+```
+
+### 6. Main App with Routing
+
+```typescript
+// apps/shell/src/App.tsx
+import React, { useEffect, useState } from 'react';
+import { BrowserRouter, Routes, Route, Link } from 'react-router-dom';
+import { deerMicroFrontendRoutes } from './config/deerMicroFrontendRoutes.config';
+import { environment } from './config/environment';
+import { loadMicroFrontendRemoteEntries } from './services/deerMicroAppLoader.service';
+import { MicroFrontendRoute } from './components/MicroFrontendRoute';
+import { DeerMicroFrontEnd } from './types/micro-frontend.types';
+
+function App() {
+  const [microApps, setMicroApps] = useState<DeerMicroFrontEnd[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const initializeMicroFrontends = async () => {
+      try {
+        // Get micro-frontend configuration
+        const mfeConfig = deerMicroFrontendRoutes(environment);
+        console.log('📋 Micro-frontend configuration:', mfeConfig);
+
+        // Preload all remote entries
+        await loadMicroFrontendRemoteEntries(mfeConfig);
+
+        setMicroApps(mfeConfig);
+        setIsLoading(false);
+      } catch (err) {
+        console.error('❌ Failed to initialize micro-frontends:', err);
+        setError(err instanceof Error ? err.message : 'Unknown error');
+        setIsLoading(false);
+      }
+    };
+
+    initializeMicroFrontends();
+  }, []);
+
+  if (isLoading) {
+    return (
+      <div style={{ padding: '40px', textAlign: 'center' }}>
+        <h2>Loading Deer Micro Apps...</h2>
+        <p>Initializing micro-frontends</p>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div style={{ padding: '40px', textAlign: 'center', color: 'red' }}>
+        <h2>Error Loading Micro-Frontends</h2>
+        <p>{error}</p>
+      </div>
+    );
+  }
+
+  return (
+    <BrowserRouter>
+      <div>
+        {/* Navigation */}
+        <nav style={{ padding: '20px', background: '#f5f5f5', borderBottom: '2px solid #ddd' }}>
+          <h1>Deer Micro App Shell</h1>
+          <ul style={{ listStyle: 'none', padding: 0, display: 'flex', gap: '20px' }}>
+            <li>
+              <Link to="/">Home</Link>
+            </li>
+            {microApps.map((mfe) => (
+              <li key={mfe.routePath}>
+                <Link to={mfe.routePath}>
+                  {mfe.moduleName.replace('Module', '').replace('MicroApp', '')}
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </nav>
+
+        {/* Routes */}
+        <div style={{ padding: '20px' }}>
+          <Routes>
+            <Route
+              path="/"
+              element={
+                <div>
+                  <h2>Welcome to Deer Micro Apps</h2>
+                  <p>Select a micro-frontend from the navigation above.</p>
+                  <h3>Available Apps:</h3>
+                  <ul>
+                    {microApps.map((mfe) => (
+                      <li key={mfe.routePath}>
+                        <strong>{mfe.moduleName}</strong> - <Link to={mfe.routePath}>Go to app</Link>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              }
+            />
+
+            {microApps.map((mfe) => (
+              <Route
+                key={mfe.routePath}
+                path={`${mfe.routePath}/*`}
+                element={<MicroFrontendRoute mfe={mfe} />}
+              />
+            ))}
+
+            <Route
+              path="*"
+              element={
+                <div>
+                  <h2>404 - Not Found</h2>
+                  <p>The page you're looking for doesn't exist.</p>
+                  <Link to="/">Go home</Link>
+                </div>
+              }
+            />
+          </Routes>
+        </div>
+      </div>
+    </BrowserRouter>
+  );
+}
+
+export default App;
+```
+
+### 7. Environment Variables (.env files)
+
+```bash
+# .env.development
+VITE_ED_ENABLED=false
+
+# .env.production
+VITE_ED_ENABLED=true
+```
+
+### 8. Usage Example for a Specific Route
+
+```typescript
+// apps/shell/src/pages/PeoplePage.tsx
+import React from 'react';
+import { MicroFrontendRoute } from '../components/MicroFrontendRoute';
+import { deerMicroFrontendRoutes } from '../config/deerMicroFrontendRoutes.config';
+import { environment } from '../config/environment';
+
+export const PeoplePage: React.FC = () => {
+  const microApps = deerMicroFrontendRoutes(environment);
+  const peopleMfe = microApps.find((mfe) => mfe.routePath === '/people');
+
+  if (!peopleMfe) {
+    return <div>People micro-frontend not configured</div>;
+  }
+
+  return <MicroFrontendRoute mfe={peopleMfe} exposedModule="./PeopleApp" />;
+};
+```
+
+## Key Differences from Your Angular Code
+
+1. **Environment handling** - Uses Vite's `import.meta.env` instead of Angular's environment files
+2. **Routing** - Uses React Router instead of Angular Router
+3. **Module loading** - Uses `loadRemote` from Module Federation instead of Angular's `loadRemoteModule`
+4. **Component-based** - React components instead of Angular modules
+
+This setup exactly mirrors your Angular configuration and will work with the same backend/micro-frontend structure! 🎯
+
+
+
+
+Perfect! I can see you have Angular code using `loadRemoteModule` with dynamic URLs. Let me convert this to React with Module Federation Enhanced.
+
+## React Equivalent of Your Angular Code
+
+### 1. Create the Service (React Hook)
+
+```typescript
+// apps/shell/src/services/useDeerMicroAppLoader.ts
+import { useCallback } from 'react';
+import { loadRemote } from '@module-federation/enhanced/runtime';
+
+export interface DeerMicroFrontEnd {
+  type: string;
+  remoteEntry: string;
+  exposedModule: string;
+  moduleName: string;
+  routeData?: any;
+  routePath: string;
+}
+
+export interface LoadRemoteModuleOptions {
+  type: string;
+  remoteEntry: string;
+  exposedModule: string;
+}
+
+/**
+ * Hook to dynamically load micro-frontend modules
+ */
+export const useDeerMicroAppLoader = () => {
+  /**
+   * Setup a single micro-frontend route
+   */
+  const setupMicroFrontendRoute = useCallback(
+    (microApp: DeerMicroFrontEnd) => {
+      return {
+        path: microApp.routePath,
+        data: microApp.routeData || {},
+        loadChildren: () =>
+          loadRemoteModule({
+            type: microApp.type,
+            remoteEntry: microApp.remoteEntry,
+            exposedModule: microApp.exposedModule,
+          }).then((moduleLoader) => moduleLoader[microApp.moduleName]),
+      };
+    },
+    []
+  );
+
+  /**
+   * Create routes for multiple micro-frontends
+   */
+  const createMicroFrontendRoutes = useCallback(
+    (microApps: DeerMicroFrontEnd[]) => {
+      return microApps.map((mfe) => setupMicroFrontendRoute(mfe));
+    },
+    [setupMicroFrontendRoute]
+  );
+
+  /**
+   * Load remote entry points for all micro-frontends
+   */
+  const loadMicroFrontendRemoteEntries = useCallback(
+    async (microApps: DeerMicroFrontEnd[]): Promise<void[]> => {
+      return Promise.all(
+        microApps.map((microApp) =>
+          loadRemoteEntry({
+            type: microApp.type,
+            remoteEntry: microApp.remoteEntry,
+          })
+        )
+      );
+    },
+    []
+  );
+
+  /**
+   * Load a remote module dynamically
+   */
+  const loadRemoteModule = async (
+    options: LoadRemoteModuleOptions
+  ): Promise<any> => {
+    const { type, remoteEntry, exposedModule } = options;
+
+    // Extract remote name from remoteEntry
+    // e.g., "volPub@http://localhost:9091/remoteEntry.js" -> "volPub"
+    const remoteName = extractRemoteName(remoteEntry);
+
+    console.log(`📦 Loading remote: ${remoteName}/${exposedModule}`);
+
+    try {
+      const module = await loadRemote(`${remoteName}/${exposedModule}`, {
+        from: 'runtime',
+        name: remoteName,
+        entry: remoteEntry,
+        type: type as 'module' | 'var',
+      });
+
+      return module;
+    } catch (error) {
+      console.error(`❌ Failed to load ${remoteName}/${exposedModule}:`, error);
+      throw error;
+    }
+  };
+
+  /**
+   * Load remote entry (preload the remote)
+   */
+  const loadRemoteEntry = async (
+    options: Pick<LoadRemoteModuleOptions, 'type' | 'remoteEntry'>
+  ): Promise<void> => {
+    const { remoteEntry } = options;
+    const remoteName = extractRemoteName(remoteEntry);
+
+    console.log(`🔄 Preloading remote entry: ${remoteName}`);
+
+    // Preload by loading the remote entry script
+    return new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = remoteEntry;
+      script.type = 'module';
+      script.onload = () => {
+        console.log(`✅ Loaded remote entry: ${remoteName}`);
+        resolve();
+      };
+      script.onerror = () => {
+        console.error(`❌ Failed to load remote entry: ${remoteName}`);
+        reject(new Error(`Failed to load ${remoteEntry}`));
+      };
+      document.head.appendChild(script);
+    });
+  };
+
+  return {
+    setupMicroFrontendRoute,
+    createMicroFrontendRoutes,
+    loadMicroFrontendRemoteEntries,
+    loadRemoteModule,
+  };
+};
+
+/**
+ * Extract remote name from remoteEntry URL
+ * Supports formats:
+ * - "remoteName@http://url/remoteEntry.js"
+ * - "http://url/remoteEntry.js" (returns undefined, needs manual name)
+ */
+function extractRemoteName(remoteEntry: string): string {
+  const match = remoteEntry.match(/^([^@]+)@/);
+  if (match) {
+    return match[1];
+  }
+  
+  // If no @ format, try to extract from URL or throw error
+  throw new Error(
+    `Remote entry must be in format "remoteName@url", got: ${remoteEntry}`
+  );
+}
+```
+
+### 2. Create Dynamic Route Component
+
+```typescript
+// apps/shell/src/components/DynamicRemoteRoute.tsx
+import React, { lazy, Suspense, ComponentType } from 'react';
+import { useDeerMicroAppLoader, LoadRemoteModuleOptions } from '../services/useDeerMicroAppLoader';
+
+interface DynamicRemoteRouteProps {
+  remoteConfig: LoadRemoteModuleOptions;
+  fallback?: React.ReactNode;
+}
+
+export const DynamicRemoteRoute: React.FC<DynamicRemoteRouteProps> = ({
+  remoteConfig,
+  fallback = <div>Loading micro-frontend...</div>,
+}) => {
+  const { loadRemoteModule } = useDeerMicroAppLoader();
+
+  // Create lazy component
+  const RemoteComponent = lazy(() =>
+    loadRemoteModule(remoteConfig).then((module) => ({
+      default: module.default || module,
+    }))
+  );
+
+  return (
+    <Suspense fallback={fallback}>
+      <RemoteComponent />
+    </Suspense>
+  );
+};
+```
+
+### 3. Usage in Your App
+
+```typescript
+// apps/shell/src/App.tsx
+import React, { useEffect, useState } from 'react';
+import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { DynamicRemoteRoute } from './components/DynamicRemoteRoute';
+import { useDeerMicroAppLoader, DeerMicroFrontEnd } from './services/useDeerMicroAppLoader';
+
+function App() {
+  const { loadMicroFrontendRemoteEntries } = useDeerMicroAppLoader();
+  const [microApps, setMicroApps] = useState<DeerMicroFrontEnd[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    // Define your micro-frontends (could come from API)
+    const apps: DeerMicroFrontEnd[] = [
+      {
+        type: 'module',
+        remoteEntry: 'volPub@http://localhost:9091/remoteEntry.js',
+        exposedModule: './VolPubApp',
+        moduleName: 'VolPubApp',
+        routePath: '/volpub',
+        routeData: { title: 'Vol Pub' },
+      },
+      // Add more micro-frontends here
+    ];
+
+    // Preload all remote entries
+    loadMicroFrontendRemoteEntries(apps)
+      .then(() => {
+        console.log('✅ All remote entries loaded');
+        setMicroApps(apps);
+        setIsLoading(false);
+      })
+      .catch((error) => {
+        console.error('❌ Failed to load remote entries:', error);
+        setIsLoading(false);
+      });
+  }, [loadMicroFrontendRemoteEntries]);
+
+  if (isLoading) {
+    return <div>Loading micro-frontends...</div>;
+  }
+
+  return (
+    <BrowserRouter>
+      <div>
+        <nav>
+          <h1>Deer Micro App Shell</h1>
+          <ul>
+            {microApps.map((app) => (
+              <li key={app.routePath}>
+                <a href={app.routePath}>{app.routeData?.title || app.moduleName}</a>
+              </li>
+            ))}
+          </ul>
+        </nav>
+
+        <Routes>
+          <Route path="/" element={<div>Home Page</div>} />
+          
+          {microApps.map((app) => (
+            <Route
+              key={app.routePath}
+              path={app.routePath}
+              element={
+                <DynamicRemoteRoute
+                  remoteConfig={{
+                    type: app.type,
+                    remoteEntry: app.remoteEntry,
+                    exposedModule: app.exposedModule,
+                  }}
+                />
+              }
+            />
+          ))}
+        </Routes>
+      </div>
+    </BrowserRouter>
+  );
+}
+
+export default App;
+```
+
+### 4. Fetch Micro-Frontend Config from API
+
+```typescript
+// apps/shell/src/services/microFrontendConfig.service.ts
+import { DeerMicroFrontEnd } from './useDeerMicroAppLoader';
+
+/**
+ * Fetch micro-frontend configuration from backend
+ * This allows you to change URLs without rebuilding the shell
+ */
+export async function fetchMicroFrontendConfig(): Promise<DeerMicroFrontEnd[]> {
+  try {
+    // Replace with your actual API endpoint
+    const response = await fetch('/api/micro-frontend-config');
+    
+    if (!response.ok) {
+      throw new Error('Failed to fetch micro-frontend config');
+    }
+    
+    const config = await response.json();
+    return config.microApps;
+  } catch (error) {
+    console.error('❌ Error fetching micro-frontend config:', error);
+    
+    // Fallback to default configuration
+    return getDefaultMicroFrontendConfig();
+  }
+}
+
+/**
+ * Default configuration (development)
+ */
+function getDefaultMicroFrontendConfig(): DeerMicroFrontEnd[] {
+  const environment = import.meta.env.MODE;
+  
+  const baseUrls: Record<string, Record<string, string>> = {
+    development: {
+      volPub: 'http://localhost:9091',
+    },
+    staging: {
+      volPub: 'https://staging-volpub.yourcompany.com',
+    },
+    production: {
+      volPub: 'https://volpub.yourcompany.com',
+    },
+  };
+
+  const urls = baseUrls[environment] || baseUrls.development;
+
+  return [
+    {
+      type: 'module',
+      remoteEntry: `volPub@${urls.volPub}/remoteEntry.js`,
+      exposedModule: './VolPubApp',
+      moduleName: 'VolPubApp',
+      routePath: '/volpub',
+      routeData: { title: 'Vol Pub' },
+    },
+    // Add more micro-frontends
+  ];
+}
+```
+
+### 5. Updated App with API Config
+
+```typescript
+// apps/shell/src/App.tsx
+import React, { useEffect, useState } from 'react';
+import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { DynamicRemoteRoute } from './components/DynamicRemoteRoute';
+import { useDeerMicroAppLoader, DeerMicroFrontEnd } from './services/useDeerMicroAppLoader';
+import { fetchMicroFrontendConfig } from './services/microFrontendConfig.service';
+
+function App() {
+  const { loadMicroFrontendRemoteEntries } = useDeerMicroAppLoader();
+  const [microApps, setMicroApps] = useState<DeerMicroFrontEnd[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    // Fetch config from API and preload remotes
+    fetchMicroFrontendConfig()
+      .then((apps) => {
+        console.log('📋 Loaded micro-frontend config:', apps);
+        return loadMicroFrontendRemoteEntries(apps).then(() => apps);
+      })
+      .then((apps) => {
+        setMicroApps(apps);
+        setIsLoading(false);
+      })
+      .catch((err) => {
+        console.error('❌ Failed to initialize micro-frontends:', err);
+        setError(err.message);
+        setIsLoading(false);
+      });
+  }, [loadMicroFrontendRemoteEntries]);
+
+  if (isLoading) {
+    return <div>Loading micro-frontends...</div>;
+  }
+
+  if (error) {
+    return <div>Error loading micro-frontends: {error}</div>;
+  }
+
+  return (
+    <BrowserRouter>
+      <div>
+        <nav>
+          <h1>Deer Micro App Shell</h1>
+          <ul>
+            {microApps.map((app) => (
+              <li key={app.routePath}>
+                <a href={app.routePath}>{app.routeData?.title || app.moduleName}</a>
+              </li>
+            ))}
+          </ul>
+        </nav>
+
+        <Routes>
+          <Route path="/" element={<div>Home Page</div>} />
+          
+          {microApps.map((app) => (
+            <Route
+              key={app.routePath}
+              path={`${app.routePath}/*`}
+              element={
+                <DynamicRemoteRoute
+                  remoteConfig={{
+                    type: app.type,
+                    remoteEntry: app.remoteEntry,
+                    exposedModule: app.exposedModule,
+                  }}
+                />
+              }
+            />
+          ))}
+        </Routes>
+      </div>
+    </BrowserRouter>
+  );
+}
+
+export default App;
+```
+
+## Key Differences from Angular
+
+1. **No Router Guards** - React Router doesn't have guards, use HOCs or middleware instead
+2. **Hooks instead of Services** - React uses hooks for reusable logic
+3. **Suspense for Loading** - React uses Suspense boundaries for lazy loading
+4. **loadRemote API** - Module Federation Enhanced provides `loadRemote` instead of Angular's `loadRemoteModule`
+
+## Backend API Response Format
+
+Your backend should return JSON like this:
+
+```json
+{
+  "microApps": [
+    {
+      "type": "module",
+      "remoteEntry": "volPub@https://volpub-cdn.yourcompany.com/remoteEntry.js",
+      "exposedModule": "./VolPubApp",
+      "moduleName": "VolPubApp",
+      "routePath": "/volpub",
+      "routeData": {
+        "title": "Vol Pub",
+        "permissions": ["view_volpub"]
+      }
+    }
+  ]
+}
+```
+
+This approach gives you the same dynamic URL loading as your Angular code! 🎉
+
