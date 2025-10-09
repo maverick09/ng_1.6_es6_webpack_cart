@@ -1,0 +1,283 @@
+Great question! Yes, there are better ways to debug Module Federation issues. Let me show you some utilities and techniques.
+
+## Looking at Your Current State (Image 1)
+
+The good news: **All your shared dependencies now show only ONE version each!** ✅
+
+```javascript
+▼ @citi-icg-172888/icgds-react:
+  ► 6.1.5: {deps: Array(0), useIn: Array(0), from: 'volPub', loading: Promise, ...}
+
+▼ react:
+  ► 18.3.1: {deps: Array(0), useIn: Array(1), from: 'volPub', loading: Promise, ...}
+
+▼ react-dom:
+  ► 18.3.1: {deps: Array(0), useIn: Array(0), from: 'volPub', loading: Promise, ...}
+
+▼ react-error-boundary:
+  ► 6.0.0: {deps: Array(0), useIn: Array(1), from: 'shell', loading: Promise, ...}
+
+▼ react-hook-form:
+  ► 7.64.0: {version: '7.64.0', scope: Array(1), deps: Array(0), useIn: Array(0), from: 'shell', ...}
+
+▼ react-router-dom:
+  ► 6.22.0: {deps: Array(0), useIn: Array(0), from: 'volPub', loading: Promise, ...}
+
+▼ zustand:
+  ► 5.0.8: {deps: Array(0), useIn: Array(0), from: 'shell', loading: null, ...}
+```
+
+**No more duplicate versions!** But you're still getting the **"Please call createInstance first. #RUNTIME-009"** error.
+
+## Built-in Module Federation Debugging Tools
+
+### 1. **Access the Federation Runtime Instance Directly**
+
+Add this to your browser console:
+
+```javascript
+// View all Federation instances
+console.log(window.__FEDERATION__);
+
+// View the main instance
+console.log(window.__FEDERATION__.__INSTANCES__);
+
+// Pretty print as JSON
+console.log(JSON.stringify(window.__FEDERATION__.__INSTANCES__, null, 2));
+```
+
+### 2. **Create a Debug Helper in Your Code**
+
+Add this utility file to your project:
+
+```typescript
+// src/utils/federationDebug.ts
+export const debugFederation = () => {
+  const federation = (window as any).__FEDERATION__;
+  
+  if (!federation) {
+    console.error('❌ Module Federation not initialized');
+    return;
+  }
+
+  console.group('🔍 Module Federation Debug Info');
+  
+  // Show all instances
+  console.log('📦 Instances:', federation.__INSTANCES__);
+  
+  // Show shared scope for each instance
+  Object.values(federation.__INSTANCES__).forEach((instance: any) => {
+    console.group(`Instance: ${instance.name}`);
+    console.log('Share Scope Map:', instance.shareScopeMap);
+    console.log('Remotes:', instance.options?.remotes);
+    console.log('Shared:', instance.options?.shared);
+    console.groupEnd();
+  });
+  
+  console.groupEnd();
+  
+  return federation;
+};
+
+// Export to window for console access
+if (typeof window !== 'undefined') {
+  (window as any).debugFederation = debugFederation;
+}
+```
+
+Then in your console:
+```javascript
+window.debugFederation()
+```
+
+### 3. **Enhanced Runtime Plugin for Better Logging**
+
+Update your runtime plugin with structured logging:
+
+```typescript
+// runtimePlugin.ts
+import { ModuleFederationRuntimePlugin } from '@module-federation/enhanced/runtime';
+
+const createDebugPlugin: () => ModuleFederationRuntimePlugin = function () {
+  return {
+    name: 'debug-federation-plugin',
+    
+    beforeInit(args) {
+      console.group('🚀 [Federation] beforeInit');
+      console.table({
+        name: args.options.name,
+        remotes: args.options.remotes?.length || 0,
+        shared: Object.keys(args.options.shared || {}).length,
+      });
+      console.groupEnd();
+      return args;
+    },
+    
+    init(args) {
+      console.log('✅ [Federation] init completed', args);
+      return args;
+    },
+    
+    beforeRequest(args) {
+      console.log(`📥 [Federation] beforeRequest: ${args.id}`, {
+        id: args.id,
+        options: args.options,
+        origin: args.origin
+      });
+      return args;
+    },
+    
+    afterResolve(args) {
+      console.log(`✅ [Federation] afterResolve: ${args.id}`, {
+        expose: args.expose,
+        remote: args.remote,
+        pkgNameOrAlias: args.pkgNameOrAlias
+      });
+      return args;
+    },
+    
+    onLoad(args) {
+      console.log(`📦 [Federation] onLoad: ${args.id}`, args);
+      return args;
+    },
+    
+    resolveShare(args) {
+      const { pkgName, version, scope } = args;
+      const shareScopeMap = args.shareScopeMap?.[scope]?.[pkgName];
+      
+      if (shareScopeMap) {
+        const versions = Object.keys(shareScopeMap);
+        console.log(`🔗 [Federation] resolveShare: ${pkgName}`, {
+          requestedVersion: version,
+          availableVersions: versions,
+          scope
+        });
+        
+        // Check for version mismatches
+        if (versions.length > 1) {
+          console.warn(`⚠️ Multiple versions found for ${pkgName}:`, versions);
+        }
+      }
+      
+      return args;
+    },
+    
+    errorLoadRemote(args) {
+      console.error(`❌ [Federation] errorLoadRemote`, {
+        id: args.id,
+        error: args.error,
+        from: args.from,
+        lifecycle: args.lifecycle,
+        origin: args.origin
+      });
+      return args;
+    },
+  };
+};
+
+export default createDebugPlugin;
+```
+
+### 4. **Use Module Federation DevTools (Chrome Extension)**
+
+There's an unofficial Chrome extension that helps visualize Module Federation:
+
+1. Search for "Module Federation DevTools" in Chrome Web Store
+2. Or use this bookmarklet in your console:
+
+```javascript
+// Bookmarklet to visualize federation
+javascript:(function(){
+  const fed = window.__FEDERATION__;
+  if(!fed) { alert('No Federation found'); return; }
+  
+  const instances = Object.values(fed.__INSTANCES__);
+  const report = instances.map(i => ({
+    name: i.name,
+    remotes: i.options?.remotes?.map(r => r.name),
+    sharedDeps: Object.keys(i.shareScopeMap?.default || {})
+  }));
+  
+  console.table(report);
+  console.log('Full details:', fed);
+})();
+```
+
+### 5. **Check Initialization Status**
+
+Add this check before trying to load remotes:
+
+```typescript
+// In your component or route loader
+const checkFederationReady = () => {
+  const federation = (window as any).__FEDERATION__;
+  
+  if (!federation?.__INSTANCES__) {
+    console.error('❌ Federation not initialized');
+    return false;
+  }
+  
+  const instances = Object.values(federation.__INSTANCES__);
+  const shellInstance = instances.find((i: any) => i.name === 'shell');
+  
+  if (!shellInstance) {
+    console.error('❌ Shell instance not found');
+    return false;
+  }
+  
+  console.log('✅ Federation ready:', {
+    instances: instances.length,
+    shell: shellInstance.name,
+    remotes: shellInstance.options?.remotes,
+    shared: Object.keys(shellInstance.shareScopeMap?.default || {})
+  });
+  
+  return true;
+};
+
+// Use before loading components
+if (checkFederationReady()) {
+  // Safe to load remote components
+}
+```
+
+### 6. **Analyze the Exact Error Location**
+
+Based on **Image 1**, your error is:
+
+```
+Error: [ Federation Runtime ]: Please call createInstance first. #RUNTIME-009
+at error2 (chunk-6QNVA5MI.js?v=df9048ad:932:9)
+at Object.assert2 [as assert] (chunk-6QNVA5MI.js?v=df9048ad:932:9)
+at loadShare (chunk-6QNVA5MI.js?v=df9048ad:3912:19)
+```
+
+This means `loadShare` is being called before the instance is created. Check if you're calling `init()` properly.
+
+## Quick Debug Command for Your Case
+
+Paste this in your browser console right now:
+
+```javascript
+// Check if Federation is initialized
+const fed = window.__FEDERATION__;
+console.log('Federation exists:', !!fed);
+console.log('Instances:', fed?.__INSTANCES__);
+
+// Check each instance
+if (fed?.__INSTANCES__) {
+  Object.values(fed.__INSTANCES__).forEach(instance => {
+    console.group(`Instance: ${instance.name}`);
+    console.log('Initialized:', instance.inited);
+    console.log('Remotes:', instance.options?.remotes);
+    console.log('Shared packages:', Object.keys(instance.shareScopeMap?.default || {}));
+    console.log('Module cache:', instance.moduleCache);
+    console.groupEnd();
+  });
+}
+
+// Check if init was called
+console.log('Init called:', fed?.__INSTANCES__?.shell?.inited);
+```
+
+Based on your error, I suspect the issue is **initialization timing**. Your `init()` might not be completing before you try to load the remote component. Can you share where/how you're calling the `init()` function in your bootstrap.ts?
